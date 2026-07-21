@@ -4,20 +4,25 @@ on:
   workflow_call:
     inputs:
       runs_on:
-        description: "Runner label(s). Comma-separated string like 'self-hosted, Linux, fargate-runner' or a single label like 'ubuntu-latest'."
+        description: "Runner label(s). Comma-separated string like 'self-hosted, Linux, fargate-runner' or a single label like 'ubuntu-latest'. Applied to setup/review/summarize jobs."
         required: false
         type: string
         default: "self-hosted, Linux, fargate-runner"
-      action_ref:
-        description: "The ref of gatellm-io/gatellm-code-review to fetch the composite action from. Should match the ref used to call this workflow (e.g. v1, main). Defaults to 'main'."
-        required: false
-        type: string
-        default: "main"
       model:
-        description: "模型名称（可选，默认使用 deepseek-v4-pro）"
+        description: "单模型名称（向后兼容；models 为空时使用，默认使用 deepseek-v4-pro）"
         required: false
         type: string
         default: ${{ vars.CODE_REVIEW_MODEL }}
+      models:
+        description: "逗号分隔的模型列表（≥2 个启用多模型并行 review + 汇总；为空回退到 model 单模型模式；最多 3 个，超出截断）"
+        required: false
+        type: string
+        default: ${{ vars.CODE_REVIEW_MODELS }}
+      summary_model:
+        description: "汇总模型名称（多模型模式下使用；为空时取 models 的第一个）"
+        required: false
+        type: string
+        default: ${{ vars.CODE_REVIEW_SUMMARY_MODEL }}
       max_lines:
         description: "PR 变更行数上限，超过则跳过 Review（-1 表示不限制，默认 10000）"
         required: false
@@ -29,7 +34,7 @@ on:
         type: string
         default: ""
       prompt:
-        description: "自定义 Review 提示词（可选，有默认值）"
+        description: "自定义Review提示词（可选，有默认值）"
         required: false
         type: string
         default: |
@@ -61,6 +66,24 @@ on:
           - Present findings first (ordered by severity with file/line references), follow with open questions or assumptions, and offer a change-summary only as a secondary detail
           - If no findings are discovered, state that explicitly and mention any residual risks or testing gaps
 
+          ## TODO 修改清单
+
+          评论必须包含一个 `## TODO 修改清单` 区块，收录所有**需要代码改动**的 finding；不需要改代码的内容（开放问题、假设、Requires manual attention）不放入此区块，保持在各自小节。
+          每条 TODO 一行，固定格式（便于机器解析，coding AI 可直接读取和认领）：
+          ```
+          ## TODO 修改清单
+          - [ ] **[TODO-1] [P0] `src/app.ts:42`** — 问题简述；修改要求：具体要改成什么
+          - [ ] **[TODO-2] [P1] `src/utils/date.ts:10-15`** — 问题简述；修改要求：……
+          ```
+          格式规则：
+          - ID 递增且稳定：`TODO-<n>`，同一评论内不重复
+          - 严重性分级，按严重性排序：`[P0]` 严重 bug/安全问题；`[P1]` 逻辑风险/行为回归；`[P2]` 性能问题/测试缺失；`[P3]` 风格建议
+          - 位置用反引号包裹的 `file:line` 或 `file:line-line`，必须来自本 PR 的 diff
+          - 每条自包含：问题描述 + 明确的「修改要求」，coding AI 无需回读其他上下文即可执行
+          - 复选框初始一律 `- [ ]`，认领/销项协议不做规定，由调用方与 coding AI 自行约定
+          - 既有「findings 优先、按严重性排序、`**Issue Title**`」等格式要求保留，用于 TODO 区块之外的分析性内容；每条 TODO 可在正文 findings 中有对应的详细分析，TODO 行内保持精炼
+          - 若无任何需要改动的 finding，在 TODO 区块显式注明「无需代码改动」
+
           ## Requires manual attention
 
           After presenting findings, include a "Requires manual attention" section highlighting areas that require careful human review. Focus on:
@@ -89,32 +112,522 @@ on:
           When reviewing a PR, use gh command to fetch remote content, like GH_PAGER="cat" gh pr view xxx
 
 jobs:
-  auto-review:
+  setup:
     runs-on: ${{ inputs.runs_on }}
     concurrency:
-      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: claude-review-setup-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      too_large: ${{ steps.plan.outputs.too_large }}
+      mode: ${{ steps.plan.outputs.mode }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      summary_model: ${{ steps.plan.outputs.summary_model }}
+    steps:
+      - name: Resolve model matrix & check PR size
+        id: plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // —— 1) 模型解析（无条件执行，保证 matrix 永远是合法 JSON）——
+            const MAX_MODELS = 3; // 同时并行的 review 模型上限
+            const rawModels = `${{ inputs.models }}`;
+            const singleModel = `${{ inputs.model }}`;
+            let models = rawModels.split(',').map(s => s.trim()).filter(Boolean);
+            if (models.length <= 1) {
+              models = [models[0] ?? singleModel ?? ''];
+            }
+            if (models.length > MAX_MODELS) {
+              core.warning(`配置了 ${models.length} 个模型，超过上限 ${MAX_MODELS}，已截断为前 ${MAX_MODELS} 个：[${models.slice(0, MAX_MODELS).join(', ')}]`);
+              models = models.slice(0, MAX_MODELS);
+            }
+            const mode = models.length > 1 ? 'multi' : 'single';
+            const slugRe = /[^A-Za-z0-9._-]/g;
+            const matrix = models.map((m, i) => ({
+              model: m,
+              slug: `m${i}-` + (m || 'default').replace(slugRe, '-'),
+            }));
+            const summaryModel = `${{ inputs.summary_model }}`.trim() || models[0];
+            core.setOutput('mode', mode);
+            core.setOutput('matrix', JSON.stringify(matrix));
+            core.setOutput('summary_model', summaryModel);
+            core.info(`Resolved mode=${mode}, models=[${models.join(', ')}], summary_model=${summaryModel}`);
+
+            // —— 2) PR size check（run_attempt>1 跳过；max_lines=-1 禁用）——
+            const runAttempt = parseInt('${{ github.run_attempt }}');
+            if (runAttempt > 1) {
+              core.info(`Manual rerun detected (attempt ${runAttempt}), skipping size check.`);
+              core.setOutput('too_large', 'false');
+              return;
+            }
+            const maxLines = parseInt('${{ inputs.max_lines }}');
+            if (maxLines === -1) {
+              core.info('Size check disabled (max_lines=-1), skipping.');
+              core.setOutput('too_large', 'false');
+              return;
+            }
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const totalLines = pr.additions + pr.deletions;
+            core.info(`PR total changed lines: ${totalLines} (additions: ${pr.additions}, deletions: ${pr.deletions})`);
+            if (totalLines > maxLines) {
+              core.setOutput('too_large', 'true');
+              core.warning(`PR 变更行数 ${totalLines} 超过 ${maxLines} 行，已跳过 Claude Review。如需强制执行，请手动 Re-run 此 Workflow。`);
+            } else {
+              core.setOutput('too_large', 'false');
+            }
+
+  review:
+    needs: setup
+    if: needs.setup.outputs.too_large != 'true'
+    runs-on: ${{ inputs.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}-${{ matrix.slug }}
       cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
       issues: write
       actions: read
+    env:
+      ANTHROPIC_BASE_URL: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
+      CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
     steps:
-      - name: Checkout action repo
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: gatellm-io/gatellm-code-review
-          ref: ${{ inputs.action_ref }}
-          path: claude-auto-review-action
           fetch-depth: 1
 
-      - name: Run Claude Auto Review
-        uses: ./claude-auto-review-action
+      - name: Minimize old Claude comments
+        if: needs.setup.outputs.mode == 'single'
+        uses: actions/github-script@v7
         with:
-          anthropic_api_key: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
-          anthropic_base_url: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+            });
+            const claudeComments = comments.filter(
+              (c) =>
+                c.user.login.toLowerCase().includes('claude') ||
+                (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
+            );
+            for (const comment of claudeComments) {
+              await github.graphql(
+                `
+              mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+                minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                  minimizedComment {
+                    isMinimized
+                    minimizedReason
+                  }
+                }
+              }
+              `,
+                {
+                  subjectId: comment.node_id,
+                  classifier: 'OUTDATED',
+                },
+              );
+              core.info(`Minimized old Claude comment: ${comment.id}`);
+            }
+
+      - name: Detect Claude CLI path
+        id: detect
+        shell: bash
+        run: |
+          CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+          if [ -n "$CLAUDE_PATH" ]; then
+            echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+            echo "Claude CLI found at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
+          else
+            echo "::warning::Claude CLI not found in PATH, will fall back to curl install"
+            echo "claude_path=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Automatic PR Review (${{ matrix.model }})
+        uses: anthropics/claude-code-action@v1
+        with:
           github_token: ${{ github.token }}
-          model: ${{ inputs.model }}
-          max_lines: ${{ inputs.max_lines }}
-          user_request: ${{ inputs.user_request }}
-          prompt: ${{ inputs.prompt }}
+          anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+          track_progress: ${{ needs.setup.outputs.mode == 'single' }}
+          path_to_claude_code_executable: ${{ steps.detect.outputs.claude_path }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+            Before starting your review, run these commands to load context:
+
+            1. Load your last review comment (to avoid repeating findings and build on previous feedback):
+            gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
+
+            2. Load all user comments on this PR (to ensure you don't miss user feedback):
+            gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
+
+            ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            ${{ inputs.prompt }}
+
+            ${{ needs.setup.outputs.mode == 'single' && 'Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.' || '' }}${{ needs.setup.outputs.mode == 'multi' && 'IMPORTANT: Do NOT post any comment to the PR. Instead, write your complete review in Markdown to the file `./claude-review-output.md` in the current working directory using the Write tool. The file content must be exactly the review body you would otherwise post, nothing else.' || '' }}
+          claude_args: |
+            --allowedTools "${{ needs.setup.outputs.mode == 'multi' && 'Write,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*)' || 'mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)' }}"
+            ${{ matrix.model != '' && format('--model {0}', matrix.model) || '' }}
+
+      - name: Package review output
+        if: ${{ !cancelled() && needs.setup.outputs.mode == 'multi' }}
+        shell: bash
+        run: |
+          mkdir -p review-output
+          OUT="review-output/${{ matrix.slug }}.md"
+          {
+            echo "<!-- reviewer-model: ${{ matrix.model }} -->"
+            echo "# Reviewer: ${{ matrix.model }}"
+            echo
+            if [ -f ./claude-review-output.md ]; then
+              cat ./claude-review-output.md
+            else
+              echo "> ⚠️ 该模型未产出 review 结果（执行失败或未写入输出文件）。"
+            fi
+          } > "$OUT"
+          echo "Packaged review output to $OUT"
+
+      - name: Upload review artifact
+        if: ${{ !cancelled() && needs.setup.outputs.mode == 'multi' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-review-${{ matrix.slug }}
+          path: review-output/
+          retention-days: 7
+          overwrite: true
+
+      - name: Check review quality
+        if: needs.setup.outputs.mode == 'single'
+        id: quality
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+            });
+
+            const claudeComments = comments
+              .filter(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude'))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            if (claudeComments.length === 0) {
+              core.warning('No Claude review comment found, will retry.');
+              core.setOutput('too_short', 'true');
+              return;
+            }
+
+            const latest = claudeComments[0];
+            const len = latest.body.length;
+            core.info(`Latest review comment length: ${len} chars`);
+
+            if (len < 100) {
+              core.warning(`Review too short (${len} chars < 100), will retry.`);
+              core.setOutput('too_short', 'true');
+              await github.graphql(`
+                mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+                  minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                    minimizedComment { isMinimized }
+                  }
+                }
+              `, { subjectId: latest.node_id, classifier: 'OUTDATED' });
+              core.info(`Minimized low-quality comment: ${latest.id}`);
+            } else {
+              core.info('Review quality check passed.');
+              core.setOutput('too_short', 'false');
+            }
+
+      - name: Retry PR Review (short result)
+        if: needs.setup.outputs.mode == 'single' && steps.quality.outputs.too_short == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+          track_progress: true
+          path_to_claude_code_executable: ${{ steps.detect.outputs.claude_path }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+            Before starting your review, run these commands to load context:
+
+            1. Load your last review comment (to avoid repeating findings and build on previous feedback):
+            gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
+
+            2. Load all user comments on this PR (to ensure you don't miss user feedback):
+            gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
+
+            ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            ${{ inputs.prompt }}
+
+            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"
+            ${{ matrix.model != '' && format('--model {0}', matrix.model) || '' }}
+
+  summarize:
+    needs: [setup, review]
+    if: ${{ !cancelled() && needs.setup.outputs.too_large != 'true' && needs.setup.outputs.mode == 'multi' }}
+    runs-on: ${{ inputs.runs_on }}
+    concurrency:
+      group: claude-review-summary-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    env:
+      ANTHROPIC_BASE_URL: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
+      CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download all review artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: claude-review-*
+          path: ./claude-reviews
+          merge-multiple: true
+
+      - name: Verify review outputs
+        id: verify
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ./claude-reviews
+          COUNT=$(/usr/bin/find ./claude-reviews -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+          echo "Collected $COUNT review file(s):"
+          ls -la ./claude-reviews/ || true
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::所有 review job 均未产出结果，跳过汇总评论。"
+            exit 1
+          fi
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+      - name: Minimize old Claude comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+            });
+            const claudeComments = comments.filter(
+              (c) =>
+                c.user.login.toLowerCase().includes('claude') ||
+                (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
+            );
+            for (const comment of claudeComments) {
+              await github.graphql(
+                `
+              mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+                minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                  minimizedComment {
+                    isMinimized
+                    minimizedReason
+                  }
+                }
+              }
+              `,
+                {
+                  subjectId: comment.node_id,
+                  classifier: 'OUTDATED',
+                },
+              );
+              core.info(`Minimized old Claude comment: ${comment.id}`);
+            }
+
+      - name: Detect Claude CLI path
+        id: detect
+        shell: bash
+        run: |
+          CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+          if [ -n "$CLAUDE_PATH" ]; then
+            echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+            echo "Claude CLI found at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
+          else
+            echo "::warning::Claude CLI not found in PATH, will fall back to curl install"
+            echo "claude_path=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Summarize reviews
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+          track_progress: true
+          path_to_claude_code_executable: ${{ steps.detect.outputs.claude_path }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+            你是多模型 code review 的汇总者。多个 AI 模型已各自独立完成了对本 PR 的 review，原始结果保存在 `./claude-reviews/` 目录下（每个 `.md` 文件对应一个模型，文件开头的 `# Reviewer: <model>` 标明模型名）。
+
+            执行步骤：
+            1. 用 Glob/Read 读取 `./claude-reviews/` 下的全部 `.md` 文件，从每个文件的 `# Reviewer:` 头部提取模型名。
+            2. 可用 `GH_PAGER=cat gh pr diff ${{ github.event.pull_request.number || github.event.issue.number }}` 查看实际 diff，用于交叉验证有争议的 finding。
+            3. 合并所有 finding 并去重：同一问题被不同模型以不同措辞报告时视为同一条。
+            4. 对每条 finding 标注置信度：
+               - 被 ≥2 个模型独立报告 → 在标题后标注 `[共识 N/M]`（N=报告该问题的模型数，M=总模型数），置信度高，排序靠前
+               - 仅单一模型报告 → 对照 diff 快速核实；明显误报（引用不存在的代码、误解 diff 上下文）直接丢弃，无法确认的保留并标注 `[单模型]`
+            5. 汇总各模型的 `## TODO 修改清单` 区块：合并去重后**重新编号**为连续的 `TODO-1..n`，输出统一的 `## TODO 修改清单`（格式见下方 review-guidelines）。共识标注加在 TODO 行的严重性标签后，例如 `- [ ] **[TODO-1] [P0] [共识 2/3] \`src/app.ts:42\`** — …`。折叠块中的原始 review 保留各自原始编号，但需在评论中注明正文 TODO 清单为唯一权威清单。
+            6. 按严重性排序输出（严重 bug / 安全问题 → 逻辑风险 / 行为回归 → 性能 → 测试缺失 → 风格建议）。
+            7. 合并各模型的 "Requires manual attention" 为一节，去重。
+            8. 若某模型的文件内容是失败占位说明（"未产出 review 结果"），在评论末尾注明该模型缺席，不影响其余汇总。
+
+            ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            以下是本次 review 使用的指南，其中的 **语言要求（简体中文）、TODO 修改清单格式、Output formatting 要求同样适用于你的汇总评论**：
+            <review-guidelines>
+            ${{ inputs.prompt }}
+            </review-guidelines>
+
+            最终输出要求：
+            - 只发**一条** PR 评论（用 Bash 工具执行 `gh pr comment`），不要发多条。
+            - 评论开头一行说明这是 N 个模型（列出模型名）的联合 review 汇总。
+            - 评论结构：
+              - 开头说明联合 review 的模型列表
+              - 合并去重后的 findings 分析（含置信度标注，按严重性排序）
+              - 统一的 `## TODO 修改清单`（唯一权威清单，连续编号 TODO-1..n）
+              - "Requires manual attention" 合并节
+              - 失败模型缺席说明（如有）
+              - 底部附上各模型原始 review，每个模型一个折叠块，格式：
+                <details>
+                <summary>原始 Review：<model-name></summary>
+                （原始内容，注意 <details> 标签与内容之间必须留空行，markdown 才能正确渲染）
+                </details>
+            - GitHub 评论上限 65536 字符：如原始 review 总量过大，可对折叠块内容做等比截断并注明"已截断，完整内容见 workflow artifacts"，但汇总正文与 TODO 清单不得截断。
+            - 除这条评论外不要做任何其他 PR 操作。
+          claude_args: |
+            --allowedTools "Read,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*)"
+            ${{ needs.setup.outputs.summary_model != '' && format('--model {0}', needs.setup.outputs.summary_model) || '' }}
+
+      - name: Check summary quality
+        id: summary_quality
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+            });
+
+            const claudeComments = comments
+              .filter(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude'))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            if (claudeComments.length === 0) {
+              core.warning('No Claude summary comment found, will retry.');
+              core.setOutput('too_short', 'true');
+              return;
+            }
+
+            const latest = claudeComments[0];
+            const len = latest.body.length;
+            core.info(`Latest summary comment length: ${len} chars`);
+
+            if (len < 100) {
+              core.warning(`Summary too short (${len} chars < 100), will retry.`);
+              core.setOutput('too_short', 'true');
+              await github.graphql(`
+                mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+                  minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                    minimizedComment { isMinimized }
+                  }
+                }
+              `, { subjectId: latest.node_id, classifier: 'OUTDATED' });
+              core.info(`Minimized low-quality summary comment: ${latest.id}`);
+            } else {
+              core.info('Summary quality check passed.');
+              core.setOutput('too_short', 'false');
+            }
+
+      - name: Retry summarize (short result)
+        if: steps.summary_quality.outputs.too_short == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+          track_progress: true
+          path_to_claude_code_executable: ${{ steps.detect.outputs.claude_path }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+            你是多模型 code review 的汇总者。多个 AI 模型已各自独立完成了对本 PR 的 review，原始结果保存在 `./claude-reviews/` 目录下（每个 `.md` 文件对应一个模型，文件开头的 `# Reviewer: <model>` 标明模型名）。
+
+            执行步骤：
+            1. 用 Glob/Read 读取 `./claude-reviews/` 下的全部 `.md` 文件，从每个文件的 `# Reviewer:` 头部提取模型名。
+            2. 可用 `GH_PAGER=cat gh pr diff ${{ github.event.pull_request.number || github.event.issue.number }}` 查看实际 diff，用于交叉验证有争议的 finding。
+            3. 合并所有 finding 并去重：同一问题被不同模型以不同措辞报告时视为同一条。
+            4. 对每条 finding 标注置信度：
+               - 被 ≥2 个模型独立报告 → 在标题后标注 `[共识 N/M]`（N=报告该问题的模型数，M=总模型数），置信度高，排序靠前
+               - 仅单一模型报告 → 对照 diff 快速核实；明显误报（引用不存在的代码、误解 diff 上下文）直接丢弃，无法确认的保留并标注 `[单模型]`
+            5. 汇总各模型的 `## TODO 修改清单` 区块：合并去重后**重新编号**为连续的 `TODO-1..n`，输出统一的 `## TODO 修改清单`（格式见下方 review-guidelines）。共识标注加在 TODO 行的严重性标签后，例如 `- [ ] **[TODO-1] [P0] [共识 2/3] \`src/app.ts:42\`** — …`。折叠块中的原始 review 保留各自原始编号，但需在评论中注明正文 TODO 清单为唯一权威清单。
+            6. 按严重性排序输出（严重 bug / 安全问题 → 逻辑风险 / 行为回归 → 性能 → 测试缺失 → 风格建议）。
+            7. 合并各模型的 "Requires manual attention" 为一节，去重。
+            8. 若某模型的文件内容是失败占位说明（"未产出 review 结果"），在评论末尾注明该模型缺席，不影响其余汇总。
+
+            ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            以下是本次 review 使用的指南，其中的 **语言要求（简体中文）、TODO 修改清单格式、Output formatting 要求同样适用于你的汇总评论**：
+            <review-guidelines>
+            ${{ inputs.prompt }}
+            </review-guidelines>
+
+            最终输出要求：
+            - 只发**一条** PR 评论（用 Bash 工具执行 `gh pr comment`），不要发多条。
+            - 评论开头一行说明这是 N 个模型（列出模型名）的联合 review 汇总。
+            - 评论结构：
+              - 开头说明联合 review 的模型列表
+              - 合并去重后的 findings 分析（含置信度标注，按严重性排序）
+              - 统一的 `## TODO 修改清单`（唯一权威清单，连续编号 TODO-1..n）
+              - "Requires manual attention" 合并节
+              - 失败模型缺席说明（如有）
+              - 底部附上各模型原始 review，每个模型一个折叠块，格式：
+                <details>
+                <summary>原始 Review：<model-name></summary>
+                （原始内容，注意 <details> 标签与内容之间必须留空行，markdown 才能正确渲染）
+                </details>
+            - GitHub 评论上限 65536 字符：如原始 review 总量过大，可对折叠块内容做等比截断并注明"已截断，完整内容见 workflow artifacts"，但汇总正文与 TODO 清单不得截断。
+            - 除这条评论外不要做任何其他 PR 操作。
+          claude_args: |
+            --allowedTools "Read,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*)"
+            ${{ needs.setup.outputs.summary_model != '' && format('--model {0}', needs.setup.outputs.summary_model) || '' }}

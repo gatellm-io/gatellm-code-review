@@ -61,6 +61,24 @@ inputs:
       - Present findings first (ordered by severity with file/line references), follow with open questions or assumptions, and offer a change-summary only as a secondary detail
       - If no findings are discovered, state that explicitly and mention any residual risks or testing gaps
 
+      ## TODO 修改清单
+
+      评论必须包含一个 `## TODO 修改清单` 区块，收录所有**需要代码改动**的 finding；不需要改代码的内容（开放问题、假设、Requires manual attention）不放入此区块，保持在各自小节。
+      每条 TODO 一行，固定格式（便于机器解析，coding AI 可直接读取和认领）：
+      ```
+      ## TODO 修改清单
+      - [ ] **[TODO-1] [P0] `src/app.ts:42`** — 问题简述；修改要求：具体要改成什么
+      - [ ] **[TODO-2] [P1] `src/utils/date.ts:10-15`** — 问题简述；修改要求：……
+      ```
+      格式规则：
+      - ID 递增且稳定：`TODO-<n>`，同一评论内不重复
+      - 严重性分级，按严重性排序：`[P0]` 严重 bug/安全问题；`[P1]` 逻辑风险/行为回归；`[P2]` 性能问题/测试缺失；`[P3]` 风格建议
+      - 位置用反引号包裹的 `file:line` 或 `file:line-line`，必须来自本 PR 的 diff
+      - 每条自包含：问题描述 + 明确的「修改要求」，coding AI 无需回读其他上下文即可执行
+      - 复选框初始一律 `- [ ]`，认领/销项协议不做规定，由调用方与 coding AI 自行约定
+      - 既有「findings 优先、按严重性排序、`**Issue Title**`」等格式要求保留，用于 TODO 区块之外的分析性内容；每条 TODO 可在正文 findings 中有对应的详细分析，TODO 行内保持精炼
+      - 若无任何需要改动的 finding，在 TODO 区块显式注明「无需代码改动」
+
       ## Requires manual attention
 
       After presenting findings, include a "Requires manual attention" section highlighting areas that require careful human review. Focus on:

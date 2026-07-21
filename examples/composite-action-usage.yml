@@ -1,5 +1,8 @@
-# 示例：以 Composite Action 形式调用 Claude Auto Review
+# 示例：以 Composite Action 形式调用 Claude Auto Review（单模型版）
 # 把本文件放到调用方 repo 的 .github/workflows/pr-review.yml 即可使用
+#
+# 注意：composite action 只支持单模型 review，输出直接发 PR 评论。
+# 如需多模型并行 review + 汇总，请用 examples/reusable-workflow-usage.yml。
 
 name: PR Review
 
@@ -27,7 +30,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Run Claude Auto Review
+      - name: Run Claude Auto Review (single model)
         uses: gatellm-io/gatellm-code-review@v1
         with:
           # 凭证：默认指向调用方 repo 同名 secret/var，无需显式传入
