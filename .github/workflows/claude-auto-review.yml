@@ -1,0 +1,120 @@
+name: Claude Auto Review
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: "Runner label(s). Comma-separated string like 'self-hosted, Linux, fargate-runner' or a single label like 'ubuntu-latest'."
+        required: false
+        type: string
+        default: "self-hosted, Linux, fargate-runner"
+      action_ref:
+        description: "The ref of gatellm-io/gatellm-code-review to fetch the composite action from. Should match the ref used to call this workflow (e.g. v1, main). Defaults to 'main'."
+        required: false
+        type: string
+        default: "main"
+      model:
+        description: "模型名称（可选，默认使用 deepseek-v4-pro）"
+        required: false
+        type: string
+        default: ${{ vars.CODE_REVIEW_MODEL }}
+      max_lines:
+        description: "PR 变更行数上限，超过则跳过 Review（-1 表示不限制，默认 10000）"
+        required: false
+        type: number
+        default: 10000
+      user_request:
+        description: "用户通过 @claude 评论触发时的请求内容（可选）"
+        required: false
+        type: string
+        default: ""
+      prompt:
+        description: "自定义 Review 提示词（可选，有默认值）"
+        required: false
+        type: string
+        default: |
+          **CRITICAL - Language Requirement:**
+          - All review comments MUST be written in Simplified Chinese
+          - English is allowed ONLY for: code snippets, technical terms when necessary, and file paths
+          - This is a mandatory requirement and must not be ignored
+
+          Please review this pull request and provide feedback on:
+          - Code quality and best practices
+          - Potential bugs or issues
+          - Performance considerations
+          - Security concerns
+          - Test coverage
+
+          ## Review principles
+
+          - Choose the most suitable solution for the specific scenario
+            - There may be multiple solutions to the same problem; weigh the pros and cons based on the actual use case
+            - While implementing requirements, consider future extensibility to minimize maintenance costs and security risks
+          - Avoid over-engineering
+          - Pursue simple solutions; simplify complex problems
+          - Do not add entities unless necessary
+
+          ## Review strategy
+
+          - Default to a code review mindset: prioritize identifying bugs, risks, behavioral regressions, and missing tests
+          - Findings must be the primary focus of the response - keep summaries or overviews brief and only after enumerating the issues
+          - Present findings first (ordered by severity with file/line references), follow with open questions or assumptions, and offer a change-summary only as a secondary detail
+          - If no findings are discovered, state that explicitly and mention any residual risks or testing gaps
+
+          ## Requires manual attention
+
+          After presenting findings, include a "Requires manual attention" section highlighting areas that require careful human review. Focus on:
+          - Complex business logic changes that AI cannot fully validate without domain knowledge
+          - Security-sensitive code (authentication, authorization, data encryption, input sanitization)
+          - Performance-critical sections (database queries, loops, memory allocation)
+          - Financial calculations or sensitive data processing
+          - Concurrency patterns, race conditions, or distributed system interactions
+          - Database schema changes or data migration logic
+          - Third-party API integrations or external service dependencies
+          - Edge cases and error handling that may have subtle implications
+          - Architectural decisions that affect system design
+          - Changes to permission/access control logic
+          For each item, briefly explain WHY human review is recommended
+
+          ## Output formatting
+
+          - Use `-` for all list items, never use numbered lists like `1.` `2.`
+          - Keep all items flat at the same level, no nested lists or sub-items
+          - For each finding, use `**Issue Title**` followed by description text on the same or next line
+          - Use backticks for file paths, commands, env vars, and code identifiers
+          - Code samples or multi-line snippets should be wrapped in fenced code blocks
+          - File references should include line numbers when relevant (e.g., `src/app.ts:42`)
+          - Tone: collaborative, concise, factual; present tense, active voice
+
+          When reviewing a PR, use gh command to fetch remote content, like GH_PAGER="cat" gh pr view xxx
+
+jobs:
+  auto-review:
+    runs-on: ${{ inputs.runs_on }}
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout action repo
+        uses: actions/checkout@v4
+        with:
+          repository: gatellm-io/gatellm-code-review
+          ref: ${{ inputs.action_ref }}
+          path: claude-auto-review-action
+          fetch-depth: 1
+
+      - name: Run Claude Auto Review
+        uses: ./claude-auto-review-action
+        with:
+          anthropic_api_key: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
+          anthropic_base_url: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+          github_token: ${{ github.token }}
+          model: ${{ inputs.model }}
+          max_lines: ${{ inputs.max_lines }}
+          user_request: ${{ inputs.user_request }}
+          prompt: ${{ inputs.prompt }}

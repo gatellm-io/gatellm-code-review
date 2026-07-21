@@ -1,0 +1,331 @@
+name: "Claude Auto Review"
+description: "Pull request auto review powered by Claude Code. Wraps anthropics/claude-code-action with size gating, comment minimization, and short-result retry."
+branding:
+  icon: "eye"
+  color: "purple"
+
+inputs:
+  anthropic_api_key:
+    description: "Anthropic API key. Defaults to the caller repo's CODE_REVIEW_ANTHROPIC_AUTH_TOKEN secret."
+    required: false
+    default: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
+  anthropic_base_url:
+    description: "Anthropic API base URL. Defaults to the caller repo's CODE_REVIEW_ANTHROPIC_BASE_URL var."
+    required: false
+    default: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+  github_token:
+    description: "GitHub token with pull-requests/issues permissions. Defaults to GITHUB_TOKEN."
+    required: false
+    default: ${{ github.token }}
+  model:
+    description: "Model name (optional, defaults to caller repo's CODE_REVIEW_MODEL var)."
+    required: false
+    default: ${{ vars.CODE_REVIEW_MODEL }}
+  max_lines:
+    description: "Max changed lines in a PR to trigger review. -1 means unlimited. Default 10000."
+    required: false
+    default: 10000
+  user_request:
+    description: "User request passed through when triggered by @claude comment (optional)."
+    required: false
+    default: ""
+  prompt:
+    description: "Custom review prompt (optional, has default)."
+    required: false
+    default: |
+      **CRITICAL - Language Requirement:**
+      - All review comments MUST be written in Simplified Chinese
+      - English is allowed ONLY for: code snippets, technical terms when necessary, and file paths
+      - This is a mandatory requirement and must not be ignored
+
+      Please review this pull request and provide feedback on:
+      - Code quality and best practices
+      - Potential bugs or issues
+      - Performance considerations
+      - Security concerns
+      - Test coverage
+
+      ## Review principles
+
+      - Choose the most suitable solution for the specific scenario
+        - There may be multiple solutions to the same problem; weigh the pros and cons based on the actual use case
+        - While implementing requirements, consider future extensibility to minimize maintenance costs and security risks
+      - Avoid over-engineering
+      - Pursue simple solutions; simplify complex problems
+      - Do not add entities unless necessary
+
+      ## Review strategy
+
+      - Default to a code review mindset: prioritize identifying bugs, risks, behavioral regressions, and missing tests
+      - Findings must be the primary focus of the response - keep summaries or overviews brief and only after enumerating the issues
+      - Present findings first (ordered by severity with file/line references), follow with open questions or assumptions, and offer a change-summary only as a secondary detail
+      - If no findings are discovered, state that explicitly and mention any residual risks or testing gaps
+
+      ## Requires manual attention
+
+      After presenting findings, include a "Requires manual attention" section highlighting areas that require careful human review. Focus on:
+      - Complex business logic changes that AI cannot fully validate without domain knowledge
+      - Security-sensitive code (authentication, authorization, data encryption, input sanitization)
+      - Performance-critical sections (database queries, loops, memory allocation)
+      - Financial calculations or sensitive data processing
+      - Concurrency patterns, race conditions, or distributed system interactions
+      - Database schema changes or data migration logic
+      - Third-party API integrations or external service dependencies
+      - Edge cases and error handling that may have subtle implications
+      - Architectural decisions that affect system design
+      - Changes to permission/access control logic
+      For each item, briefly explain WHY human review is recommended
+
+      ## Output formatting
+
+      - Use `-` for all list items, never use numbered lists like `1.` `2.`
+      - Keep all items flat at the same level, no nested lists or sub-items
+      - For each finding, use `**Issue Title**` followed by description text on the same or next line
+      - Use backticks for file paths, commands, env vars, and code identifiers
+      - Code samples or multi-line snippets should be wrapped in fenced code blocks
+      - File references should include line numbers when relevant (e.g., `src/app.ts:42`)
+      - Tone: collaborative, concise, factual; present tense, active voice
+
+      When reviewing a PR, use gh command to fetch remote content, like GH_PAGER="cat" gh pr view xxx
+
+runs:
+  using: composite
+  steps:
+    - name: Check PR size
+      id: check
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const runAttempt = parseInt('${{ github.run_attempt }}');
+          if (runAttempt > 1) {
+            core.info(`Manual rerun detected (attempt ${runAttempt}), skipping size check.`);
+            core.setOutput('too_large', 'false');
+            return;
+          }
+          const maxLines = parseInt('${{ inputs.max_lines }}');
+          if (maxLines === -1) {
+            core.info('Size check disabled (max_lines=-1), skipping.');
+            core.setOutput('too_large', 'false');
+            return;
+          }
+          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+          const { data: pr } = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: prNumber,
+          });
+          const totalLines = pr.additions + pr.deletions;
+          core.info(`PR total changed lines: ${totalLines} (additions: ${pr.additions}, deletions: ${pr.deletions})`);
+          if (totalLines > maxLines) {
+            core.setOutput('too_large', 'true');
+            core.warning(`PR 变更行数 ${totalLines} 超过 ${maxLines} 行，已跳过 Claude Review。如需强制执行，请手动 Re-run 此 Workflow。`);
+          } else {
+            core.setOutput('too_large', 'false');
+          }
+
+    - name: Checkout repository
+      if: steps.check.outputs.too_large != 'true'
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Minimize old Claude comments
+      if: steps.check.outputs.too_large != 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+          const { data: comments } = await github.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: prNumber,
+          });
+          const claudeComments = comments.filter(
+            (c) =>
+              c.user.login.toLowerCase().includes('claude') ||
+              (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
+          );
+          for (const comment of claudeComments) {
+            await github.graphql(
+              `
+            mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+              minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                minimizedComment {
+                  isMinimized
+                  minimizedReason
+                }
+              }
+            }
+            `,
+              {
+                subjectId: comment.node_id,
+                classifier: 'OUTDATED',
+              },
+            );
+            core.info(`Minimized old Claude comment: ${comment.id}`);
+          }
+
+    - name: Detect Claude CLI path
+      if: steps.check.outputs.too_large != 'true'
+      id: detect
+      shell: bash
+      run: |
+        CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+        if [ -n "$CLAUDE_PATH" ]; then
+          echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+          echo "Claude CLI found at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
+        else
+          echo "::warning::Claude CLI not found in PATH, will fall back to curl install"
+          echo "claude_path=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Install Claude CLI if missing
+      if: steps.check.outputs.too_large != 'true' && steps.detect.outputs.claude_path == ''
+      id: install
+      shell: bash
+      run: |
+        set -e
+        curl -fsSL https://claude.ai/install.sh | bash
+        # install.sh typically places the binary at ~/.claude/local/claude
+        CLAUDE_PATH="$HOME/.claude/local/claude"
+        if [ -x "$CLAUDE_PATH" ]; then
+          echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+          echo "Installed Claude CLI at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
+        else
+          # Fallback: try PATH lookup after install
+          CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+          if [ -n "$CLAUDE_PATH" ]; then
+            echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+            echo "Installed Claude CLI at: $CLAUDE_PATH"
+          else
+            echo "::error::Failed to locate Claude CLI after install"
+            exit 1
+          fi
+        fi
+
+    - name: Resolve Claude CLI path
+      if: steps.check.outputs.too_large != 'true'
+      id: resolve
+      shell: bash
+      run: |
+        # Prefer detected path, fall back to install step output
+        CLAUDE_PATH="${{ steps.detect.outputs.claude_path }}"
+        if [ -z "$CLAUDE_PATH" ]; then
+          CLAUDE_PATH="${{ steps.install.outputs.claude_path }}"
+        fi
+        echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+        echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
+
+    - name: Automatic PR Review
+      if: steps.check.outputs.too_large != 'true'
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
+        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
+      with:
+        github_token: ${{ inputs.github_token }}
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        track_progress: true
+        path_to_claude_code_executable: ${{ steps.resolve.outputs.claude_path }}
+        prompt: |
+          REPO: ${{ github.repository }}
+          PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+          Before starting your review, run these commands to load context:
+
+          1. Load your last review comment (to avoid repeating findings and build on previous feedback):
+          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
+
+          2. Load all user comments on this PR (to ensure you don't miss user feedback):
+          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
+
+          ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+          ${{ inputs.prompt }}
+
+          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+        claude_args: |
+          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"
+          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+
+    - name: Check review quality
+      if: steps.check.outputs.too_large != 'true'
+      id: quality
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: prNumber,
+          });
+
+          const claudeComments = comments
+            .filter(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude'))
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+          if (claudeComments.length === 0) {
+            core.warning('No Claude review comment found, will retry.');
+            core.setOutput('too_short', 'true');
+            return;
+          }
+
+          const latest = claudeComments[0];
+          const len = latest.body.length;
+          core.info(`Latest review comment length: ${len} chars`);
+
+          if (len < 100) {
+            core.warning(`Review too short (${len} chars < 100), will retry.`);
+            core.setOutput('too_short', 'true');
+            await github.graphql(`
+              mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+                minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                  minimizedComment { isMinimized }
+                }
+              }
+            `, { subjectId: latest.node_id, classifier: 'OUTDATED' });
+            core.info(`Minimized low-quality comment: ${latest.id}`);
+          } else {
+            core.info('Review quality check passed.');
+            core.setOutput('too_short', 'false');
+          }
+
+    - name: Retry PR Review (short result)
+      if: steps.quality.outputs.too_short == 'true'
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
+        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
+      with:
+        github_token: ${{ inputs.github_token }}
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        track_progress: true
+        path_to_claude_code_executable: ${{ steps.resolve.outputs.claude_path }}
+        prompt: |
+          REPO: ${{ github.repository }}
+          PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+          Before starting your review, run these commands to load context:
+
+          1. Load your last review comment (to avoid repeating findings and build on previous feedback):
+          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
+
+          2. Load all user comments on this PR (to ensure you don't miss user feedback):
+          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
+
+          ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+          ${{ inputs.prompt }}
+
+          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+        claude_args: |
+          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"
+          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}

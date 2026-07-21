@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - fargate-runner
+config-variables:
+  - CODE_REVIEW_ANTHROPIC_BASE_URL
+  - CODE_REVIEW_MODEL

@@ -1,0 +1,43 @@
+# 示例：以 Composite Action 形式调用 Claude Auto Review
+# 把本文件放到调用方 repo 的 .github/workflows/pr-review.yml 即可使用
+
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  claude-review:
+    # Runner 由调用方决定；self-hosted 复用预装 Claude CLI，ubuntu-latest 自动 fallback 安装
+    runs-on: [self-hosted, Linux, fargate-runner]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Auto Review
+        uses: gatellm-io/gatellm-code-review@v1
+        with:
+          # 凭证：默认指向调用方 repo 同名 secret/var，无需显式传入
+          # 如需指向不同 secret/var，按需覆盖
+          anthropic_api_key: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
+          anthropic_base_url: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+
+          # 业务参数（均有默认值，按需覆盖）
+          # model: deepseek-v4-pro
+          # max_lines: 10000
+          # user_request: ""
+          # prompt: |
+          #   自定义 Review 提示词...
