@@ -6,11 +6,11 @@ branding:
 
 inputs:
   anthropic_api_key:
-    description: "Anthropic API key. Caller must pass explicitly, e.g. ${{ secrets.CODE_REVIEW_API_KEY }}."
+    description: "Anthropic API key. Caller must pass explicitly; convention is to pass secrets.CODE_REVIEW_API_KEY."
     required: false
     default: ""
   anthropic_base_url:
-    description: "Anthropic API base URL. Caller must pass explicitly, e.g. ${{ vars.CODE_REVIEW_BASE_URL }}."
+    description: "Anthropic API base URL. Caller must pass explicitly; convention is to pass vars.CODE_REVIEW_BASE_URL."
     required: false
     default: ""
   github_token:
