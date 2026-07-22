@@ -189,12 +189,26 @@ runs:
       id: detect
       shell: bash
       run: |
-        CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+        # Self-hosted runners (esp. Mac) may have minimal PATH; check common locations
+        CLAUDE_PATH=""
+        for candidate in \
+            /opt/homebrew/bin/claude \
+            /usr/local/bin/claude \
+            "$HOME/.claude/local/claude" \
+            "$HOME/.local/bin/claude" \
+            "$HOME/.nvm/versions/node"/*/bin/claude \
+            "$HOME/.npm-global/bin/claude" \
+            "$(command -v claude 2>/dev/null || true)"; do
+          if [ -x "$candidate" ]; then
+            CLAUDE_PATH="$candidate"
+            break
+          fi
+        done
         if [ -n "$CLAUDE_PATH" ]; then
           echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
           echo "Claude CLI found at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
         else
-          echo "::warning::Claude CLI not found in PATH, will fall back to curl install"
+          echo "::warning::Claude CLI not found in PATH or common locations, will attempt install"
           echo "claude_path=" >> $GITHUB_OUTPUT
         fi
 
@@ -204,18 +218,39 @@ runs:
       shell: bash
       run: |
         set -e
+        # Load nvm if present (Mac self-hosted runners often have minimal PATH)
+        export NVM_DIR="$HOME/.nvm"
+        if [ -s "$NVM_DIR/nvm.sh" ]; then
+          . "$NVM_DIR/nvm.sh"
+          echo "Loaded nvm from $NVM_DIR/nvm.sh"
+        fi
+        # Add common Homebrew paths to PATH
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
         # Try npm install first (works in geo-blocked regions where claude.ai is unavailable)
         CLAUDE_PATH=""
         if command -v npm >/dev/null 2>&1; then
           echo "Trying npm install of @anthropic-ai/claude-code..."
           if npm install -g @anthropic-ai/claude-code 2>&1; then
-            CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+            for candidate in \
+                /opt/homebrew/bin/claude \
+                /usr/local/bin/claude \
+                "$HOME/.nvm/versions/node"/*/bin/claude \
+                "$HOME/.npm-global/bin/claude" \
+                "$(command -v claude 2>/dev/null || true)"; do
+              if [ -x "$candidate" ]; then
+                CLAUDE_PATH="$candidate"
+                break
+              fi
+            done
             if [ -n "$CLAUDE_PATH" ]; then
               echo "Installed Claude CLI via npm at: $CLAUDE_PATH"
             fi
           else
             echo "npm install failed, will try fallback..."
           fi
+        else
+          echo "npm not found even after loading nvm/Homebrew paths"
         fi
         # Fall back to official install.sh if npm didn't work
         if [ -z "$CLAUDE_PATH" ]; then
