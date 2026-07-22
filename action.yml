@@ -204,23 +204,35 @@ runs:
       shell: bash
       run: |
         set -e
-        curl -fsSL https://claude.ai/install.sh | bash
-        # install.sh typically places the binary at ~/.claude/local/claude
-        CLAUDE_PATH="$HOME/.claude/local/claude"
-        if [ -x "$CLAUDE_PATH" ]; then
-          echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
-          echo "Installed Claude CLI at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
-        else
-          # Fallback: try PATH lookup after install
-          CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
-          if [ -n "$CLAUDE_PATH" ]; then
-            echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
-            echo "Installed Claude CLI at: $CLAUDE_PATH"
+        # Try npm install first (works in geo-blocked regions where claude.ai is unavailable)
+        CLAUDE_PATH=""
+        if command -v npm >/dev/null 2>&1; then
+          echo "Trying npm install of @anthropic-ai/claude-code..."
+          if npm install -g @anthropic-ai/claude-code 2>&1; then
+            CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+            if [ -n "$CLAUDE_PATH" ]; then
+              echo "Installed Claude CLI via npm at: $CLAUDE_PATH"
+            fi
           else
-            echo "::error::Failed to locate Claude CLI after install"
-            exit 1
+            echo "npm install failed, will try fallback..."
           fi
         fi
+        # Fall back to official install.sh if npm didn't work
+        if [ -z "$CLAUDE_PATH" ]; then
+          echo "Falling back to official install.sh (claude.ai)..."
+          curl -fsSL https://claude.ai/install.sh | bash
+          # install.sh typically places the binary at ~/.claude/local/claude
+          CLAUDE_PATH="$HOME/.claude/local/claude"
+          if [ ! -x "$CLAUDE_PATH" ]; then
+            CLAUDE_PATH=$(command -v claude 2>/dev/null || true)
+          fi
+        fi
+        if [ -z "$CLAUDE_PATH" ]; then
+          echo "::error::Failed to locate Claude CLI after install"
+          exit 1
+        fi
+        echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
+        echo "Installed Claude CLI at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
 
     - name: Resolve Claude CLI path
       if: steps.check.outputs.too_large != 'true'

@@ -165,7 +165,7 @@ setup job 根据解析后的 `models` 数量决定模式：
 ### Claude CLI 安装
 
 - Runner 已预装 Claude CLI（典型 self-hosted 场景）：直接复用
-- Runner 未预装（典型 `ubuntu-latest` 场景）：`action.yml` 会自动 `curl -fsSL https://claude.ai/install.sh | bash`；reusable workflow 当前仅检测 PATH，不安装（依赖 self-hosted runner 预装）
+- Runner 未预装（典型 `ubuntu-latest` 场景）：`action.yml` 先尝试 `npm install -g @anthropic-ai/claude-code`，失败再 fallback 到 `curl -fsSL https://claude.ai/install.sh | bash`（npm 不受 Claude.ai geo-block 影响，推荐）；reusable workflow 当前仅检测 PATH，不安装（依赖 self-hosted runner 预装）
 
 ### Review 输出格式
 
