@@ -77,10 +77,10 @@ jobs:
 
 | 名称 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `anthropic_api_key` | string | `${{ secrets.CODE_REVIEW_API_KEY }}` | Anthropic API key |
-| `anthropic_base_url` | string | `${{ vars.CODE_REVIEW_BASE_URL }}` | Anthropic API base URL（对接代理/网关时使用） |
+| `anthropic_api_key` | string | `""` | Anthropic API key（caller 必须显式传，e.g. `${{ secrets.CODE_REVIEW_API_KEY }}`） |
+| `anthropic_base_url` | string | `""` | Anthropic API base URL（caller 必须显式传，e.g. `${{ vars.CODE_REVIEW_BASE_URL }}`；对接代理/网关时使用） |
 | `github_token` | string | `${{ github.token }}` | GitHub token，需 `pull-requests: write`、`issues: write`、`actions: read` |
-| `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | 单模型名 |
+| `model` | string | `""` | 单模型名（caller 可传 `${{ vars.CODE_REVIEW_MODEL }}` 或字面量；空 = 用 claude CLI 默认模型） |
 | `max_lines` | number | `10000` | PR 变更行数上限，超限跳过；`-1` 表示不限制 |
 | `user_request` | string | `""` | `@claude` 评论触发时的用户请求内容 |
 | `prompt` | string | （见 `action.yml`） | 自定义 Review 提示词 |

@@ -6,21 +6,21 @@ branding:
 
 inputs:
   anthropic_api_key:
-    description: "Anthropic API key. Defaults to the caller repo's CODE_REVIEW_API_KEY secret."
+    description: "Anthropic API key. Caller must pass explicitly, e.g. ${{ secrets.CODE_REVIEW_API_KEY }}."
     required: false
-    default: ${{ secrets.CODE_REVIEW_API_KEY }}
+    default: ""
   anthropic_base_url:
-    description: "Anthropic API base URL. Defaults to the caller repo's CODE_REVIEW_BASE_URL var."
+    description: "Anthropic API base URL. Caller must pass explicitly, e.g. ${{ vars.CODE_REVIEW_BASE_URL }}."
     required: false
-    default: ${{ vars.CODE_REVIEW_BASE_URL }}
+    default: ""
   github_token:
     description: "GitHub token with pull-requests/issues permissions. Defaults to GITHUB_TOKEN."
     required: false
     default: ${{ github.token }}
   model:
-    description: "Model name (optional, defaults to caller repo's CODE_REVIEW_MODEL var)."
+    description: "Model name (optional). Caller can pass vars.CODE_REVIEW_MODEL or a literal; empty = use claude CLI default."
     required: false
-    default: ${{ vars.CODE_REVIEW_MODEL }}
+    default: ""
   max_lines:
     description: "Max changed lines in a PR to trigger review. -1 means unlimited. Default 10000."
     required: false
