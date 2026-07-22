@@ -2,7 +2,7 @@ self-hosted-runner:
   labels:
     - fargate-runner
 config-variables:
-  - CODE_REVIEW_ANTHROPIC_BASE_URL
+  - CODE_REVIEW_BASE_URL
   - CODE_REVIEW_MODEL
   - CODE_REVIEW_MODELS
   - CODE_REVIEW_SUMMARY_MODEL

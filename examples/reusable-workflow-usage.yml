@@ -12,7 +12,7 @@ on:
 jobs:
   claude-review:
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit   # 让 CODE_REVIEW_ANTHROPIC_AUTH_TOKEN 透传到 reusable workflow
+    secrets: inherit   # 让 CODE_REVIEW_API_KEY 透传到 reusable workflow
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
 

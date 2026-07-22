@@ -6,13 +6,13 @@ branding:
 
 inputs:
   anthropic_api_key:
-    description: "Anthropic API key. Defaults to the caller repo's CODE_REVIEW_ANTHROPIC_AUTH_TOKEN secret."
+    description: "Anthropic API key. Defaults to the caller repo's CODE_REVIEW_API_KEY secret."
     required: false
-    default: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
+    default: ${{ secrets.CODE_REVIEW_API_KEY }}
   anthropic_base_url:
-    description: "Anthropic API base URL. Defaults to the caller repo's CODE_REVIEW_ANTHROPIC_BASE_URL var."
+    description: "Anthropic API base URL. Defaults to the caller repo's CODE_REVIEW_BASE_URL var."
     required: false
-    default: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+    default: ${{ vars.CODE_REVIEW_BASE_URL }}
   github_token:
     description: "GitHub token with pull-requests/issues permissions. Defaults to GITHUB_TOKEN."
     required: false

@@ -41,8 +41,8 @@ jobs:
           fetch-depth: 1
       - uses: gatellm-io/gatellm-code-review@v1
         with:
-          anthropic_api_key: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
-          anthropic_base_url: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+          anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
+          anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
           # 其余 inputs 均有默认值，按需覆盖
 ```
 
@@ -62,7 +62,7 @@ on:
 jobs:
   claude-review:
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit           # 让 CODE_REVIEW_ANTHROPIC_AUTH_TOKEN 透传
+    secrets: inherit           # 让 CODE_REVIEW_API_KEY 透传
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
       # 单模型：留空 models 即可回退到 model
@@ -77,8 +77,8 @@ jobs:
 
 | 名称 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `anthropic_api_key` | string | `${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}` | Anthropic API key |
-| `anthropic_base_url` | string | `${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}` | Anthropic API base URL（对接代理/网关时使用） |
+| `anthropic_api_key` | string | `${{ secrets.CODE_REVIEW_API_KEY }}` | Anthropic API key |
+| `anthropic_base_url` | string | `${{ vars.CODE_REVIEW_BASE_URL }}` | Anthropic API base URL（对接代理/网关时使用） |
 | `github_token` | string | `${{ github.token }}` | GitHub token，需 `pull-requests: write`、`issues: write`、`actions: read` |
 | `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | 单模型名 |
 | `max_lines` | number | `10000` | PR 变更行数上限，超限跳过；`-1` 表示不限制 |
@@ -103,8 +103,8 @@ jobs:
 
 | 类型 | 名称 | 必填 | 用途 |
 |---|---|---|---|
-| Secret | `CODE_REVIEW_ANTHROPIC_AUTH_TOKEN` | ✅ | Anthropic API key |
-| Variable | `CODE_REVIEW_ANTHROPIC_BASE_URL` | 视情况 | 对接代理/网关时使用，直连官方 API 可不设 |
+| Secret | `CODE_REVIEW_API_KEY` | ✅ | Anthropic API key |
+| Variable | `CODE_REVIEW_BASE_URL` | 视情况 | 对接代理/网关时使用，直连官方 API 可不设 |
 | Variable | `CODE_REVIEW_MODEL` | 否 | 单模型模式下的默认模型名 |
 | Variable | `CODE_REVIEW_MODELS` | 否 | 多模型模式下的逗号分隔列表 |
 | Variable | `CODE_REVIEW_SUMMARY_MODEL` | 否 | 多模型模式下的汇总模型名 |

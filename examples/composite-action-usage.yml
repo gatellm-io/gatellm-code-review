@@ -35,8 +35,8 @@ jobs:
         with:
           # 凭证：默认指向调用方 repo 同名 secret/var，无需显式传入
           # 如需指向不同 secret/var，按需覆盖
-          anthropic_api_key: ${{ secrets.CODE_REVIEW_ANTHROPIC_AUTH_TOKEN }}
-          anthropic_base_url: ${{ vars.CODE_REVIEW_ANTHROPIC_BASE_URL }}
+          anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
+          anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
 
           # 业务参数（均有默认值，按需覆盖）
           # model: deepseek-v4-pro
