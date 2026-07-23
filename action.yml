@@ -145,6 +145,10 @@ runs:
       if: steps.check.outputs.too_large != 'true'
       uses: actions/checkout@v4
       with:
+        # For issue_comment events, default checkout pulls the default branch (no PR changes).
+        # Explicitly checkout PR head sha so the working tree has the PR's actual code.
+        # For pull_request events, this is equivalent (head sha); for non-PR events, fallback to github.ref.
+        ref: ${{ github.event.pull_request.head.sha || github.ref }}
         fetch-depth: 1
 
     - name: Minimize old Claude comments
