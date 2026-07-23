@@ -118,14 +118,14 @@ runs:
           echo "::error::未指定 model 参数。gatellm-code-review 要求调用方显式传入模型名，不允许静默降级到 CLI 默认模型。"
           echo "::error::请在调用处传入 with.model，例如：deepseek-v4-pro[1m] 或 claude-opus-4-8[1m]。"
           echo "::error::注意模型名的 [1m] 后缀表示 1M（100 万 token）上下文窗口变体，大 PR review 需要此变体；不带后缀为标准上下文窗口。"
-          echo "::error::composite action 无法读取 vars 上下文，因此不能自动兜底 vars.CODE_REVIEW_MODEL——必须由调用方 workflow 用 with.model: \${{ vars.CODE_REVIEW_MODEL }} 显式转发。"
+          echo "::error::composite action 无法读取 vars 上下文，因此不能自动兜底 vars.CODE_REVIEW_MODEL——必须由调用方 workflow 用 with.model 显式转发该变量。"
           exit 1
         fi
         echo "Using model: $MODEL"
 
     - name: Check PR size
       id: check
-      uses: actions/github-script@v7
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
           const runAttempt = parseInt('${{ github.run_attempt }}');
@@ -157,7 +157,7 @@ runs:
 
     - name: Checkout repository
       if: steps.check.outputs.too_large != 'true'
-      uses: actions/checkout@v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         # For issue_comment events, default checkout pulls the default branch (no PR changes).
         # Explicitly checkout PR head sha so the working tree has the PR's actual code.
@@ -167,7 +167,7 @@ runs:
 
     - name: Minimize old Claude comments
       if: steps.check.outputs.too_large != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
           const { owner, repo } = context.repo;
@@ -302,7 +302,7 @@ runs:
 
     - name: Automatic PR Review
       if: steps.check.outputs.too_large != 'true'
-      uses: anthropics/claude-code-action@v1
+      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
@@ -337,7 +337,7 @@ runs:
     - name: Check review quality
       if: steps.check.outputs.too_large != 'true'
       id: quality
-      uses: actions/github-script@v7
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
           const { owner, repo } = context.repo;
@@ -381,7 +381,7 @@ runs:
 
     - name: Retry PR Review (short result)
       if: steps.quality.outputs.too_short == 'true'
-      uses: anthropics/claude-code-action@v1
+      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}

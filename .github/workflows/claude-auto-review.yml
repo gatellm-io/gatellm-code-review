@@ -128,7 +128,7 @@ jobs:
     steps:
       - name: Resolve model matrix & check PR size
         id: plan
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             // —— 1) 模型解析（无条件执行，保证 matrix 永远是合法 JSON）——
@@ -206,13 +206,13 @@ jobs:
       CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 
       - name: Minimize old Claude comments
         if: needs.setup.outputs.mode == 'single'
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -261,7 +261,7 @@ jobs:
           fi
 
       - name: Automatic PR Review (${{ matrix.model }})
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
@@ -318,7 +318,7 @@ jobs:
       - name: Check review quality
         if: needs.setup.outputs.mode == 'single'
         id: quality
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -362,7 +362,7 @@ jobs:
 
       - name: Retry PR Review (short result)
         if: needs.setup.outputs.mode == 'single' && steps.quality.outputs.too_short == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
@@ -408,7 +408,7 @@ jobs:
       CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 
@@ -435,7 +435,7 @@ jobs:
           echo "count=$COUNT" >> $GITHUB_OUTPUT
 
       - name: Minimize old Claude comments
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -484,7 +484,7 @@ jobs:
           fi
 
       - name: Summarize reviews
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
@@ -537,7 +537,7 @@ jobs:
 
       - name: Check summary quality
         id: summary_quality
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -581,7 +581,7 @@ jobs:
 
       - name: Retry summarize (short result)
         if: steps.summary_quality.outputs.too_short == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
