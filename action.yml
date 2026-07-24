@@ -60,23 +60,23 @@ inputs:
       - Present findings first (ordered by severity with file/line references), follow with open questions or assumptions, and offer a change-summary only as a secondary detail
       - If no findings are discovered, state that explicitly and mention any residual risks or testing gaps
 
-      ## TODO 修改清单
+      ## TODO Fix List
 
-      评论必须包含一个 `## TODO 修改清单` 区块，收录所有**需要代码改动**的 finding；不需要改代码的内容（开放问题、假设、Requires manual attention）不放入此区块，保持在各自小节。
-      每条 TODO 一行，固定格式（便于机器解析，coding AI 可直接读取和认领）：
+      The comment must include a `## TODO Fix List` section containing all findings that **require code changes**; content that doesn't need code changes (open questions, assumptions, Requires manual attention) stays out of this section and remains in its own subsections.
+      Each TODO is one line in a fixed format (machine-parseable, coding AI can read and claim directly):
       ```
-      ## TODO 修改清单
-      - [ ] **[TODO-1] [P0] `src/app.ts:42`** — 问题简述；修改要求：具体要改成什么
-      - [ ] **[TODO-2] [P1] `src/utils/date.ts:10-15`** — 问题简述；修改要求：……
+      ## TODO Fix List
+      - [ ] **[TODO-1] [P0] `src/app.ts:42`** — Issue summary; Fix requirement: what specifically to change
+      - [ ] **[TODO-2] [P1] `src/utils/date.ts:10-15`** — Issue summary; Fix requirement: ...
       ```
-      格式规则：
-      - ID 递增且稳定：`TODO-<n>`，同一评论内不重复
-      - 严重性分级，按严重性排序：`[P0]` 严重 bug/安全问题；`[P1]` 逻辑风险/行为回归；`[P2]` 性能问题/测试缺失；`[P3]` 风格建议
-      - 位置用反引号包裹的 `file:line` 或 `file:line-line`，必须来自本 PR 的 diff
-      - 每条自包含：问题描述 + 明确的「修改要求」，coding AI 无需回读其他上下文即可执行
-      - 复选框初始一律 `- [ ]`，认领/销项协议不做规定，由调用方与 coding AI 自行约定
-      - 既有「findings 优先、按严重性排序、`**Issue Title**`」等格式要求保留，用于 TODO 区块之外的分析性内容；每条 TODO 可在正文 findings 中有对应的详细分析，TODO 行内保持精炼
-      - 若无任何需要改动的 finding，在 TODO 区块显式注明「无需代码改动」
+      Format rules:
+      - IDs are increasing and stable: `TODO-<n>`, no duplicates within a comment
+      - Severity grading, ordered by severity: `[P0]` critical bug / security issue; `[P1]` logic risk / behavioral regression; `[P2]` performance issue / missing tests; `[P3]` style suggestion
+      - Location wrapped in backticks as `file:line` or `file:line-line`, must come from this PR's diff
+      - Each entry is self-contained: issue description + explicit "Fix requirement", coding AI can execute without re-reading other context
+      - Checkboxes always start as `- [ ]`; claim/close protocol is not prescribed, decided by the caller and the coding AI
+      - The existing "findings first, ordered by severity, `**Issue Title**`" format requirements are retained for analytical content outside the TODO section; each TODO can have corresponding detailed analysis in the findings body, the TODO line itself stays concise
+      - If no findings require changes, explicitly note "No code changes required" in the TODO section
 
       ## Requires manual attention
 
@@ -114,10 +114,10 @@ runs:
         MODEL: ${{ inputs.model }}
       run: |
         if [ -z "$MODEL" ]; then
-          echo "::error::未指定 model 参数。gatellm-code-review 要求调用方显式传入模型名，不允许静默降级到 CLI 默认模型。"
-          echo "::error::请在调用处传入 with.model，例如：deepseek-v4-pro[1m] 或 claude-opus-4-8[1m]。"
-          echo "::error::注意模型名的 [1m] 后缀表示 1M（100 万 token）上下文窗口变体，大 PR review 需要此变体；不带后缀为标准上下文窗口。"
-          echo "::error::composite action 无法读取 vars 上下文，因此不能自动兜底 vars.CODE_REVIEW_MODEL——必须由调用方 workflow 用 with.model 显式转发该变量。"
+          echo "::error::model parameter not specified. gatellm-code-review requires callers to pass a model name explicitly; silent fallback to the CLI default model is not allowed."
+          echo "::error::Please pass with.model at the call site, e.g. deepseek-v4-pro[1m] or claude-opus-4-8[1m]."
+          echo "::error::Note: the [1m] suffix on a model name denotes the 1M-token context-window variant, recommended for large PR reviews; without the suffix, the standard context window is used."
+          echo "::error::composite actions cannot read the vars context, so vars.CODE_REVIEW_MODEL cannot be auto-fetched — the caller workflow must explicitly forward it via with.model."
           exit 1
         fi
         echo "Using model: $MODEL"
@@ -149,7 +149,7 @@ runs:
           core.info(`PR total changed lines: ${totalLines} (additions: ${pr.additions}, deletions: ${pr.deletions})`);
           if (totalLines > maxLines) {
             core.setOutput('too_large', 'true');
-            core.warning(`PR 变更行数 ${totalLines} 超过 ${maxLines} 行，已跳过 Claude Review。如需强制执行，请手动 Re-run 此 Workflow。`);
+            core.warning(`PR changed lines ${totalLines} exceed ${maxLines}; Claude Review skipped. To force execution, manually re-run this workflow.`);
           } else {
             core.setOutput('too_large', 'false');
           }

@@ -1,8 +1,8 @@
-# 示例：以 Composite Action 形式调用 Claude Auto Review（单模型版）
-# 把本文件放到调用方 repo 的 .github/workflows/pr-review.yml 即可使用
+# Example: invoking Claude Auto Review as a Composite Action (single-model variant)
+# Drop this file into the caller repo's .github/workflows/pr-review.yml to use.
 #
-# 注意：composite action 只支持单模型 review，输出直接发 PR 评论。
-# 如需多模型并行 review + 汇总，请用 examples/reusable-workflow-usage.yml。
+# Note: the composite action only supports single-model review; output is posted directly as a PR comment.
+# For multi-model parallel review + summary, use examples/reusable-workflow-usage.yml.
 
 name: PR Review
 
@@ -14,7 +14,7 @@ on:
 
 jobs:
   claude-review:
-    # Runner 由调用方决定；self-hosted 复用预装 Claude CLI，ubuntu-latest 自动 fallback 安装
+    # Runner is chosen by the caller; self-hosted reuses the preinstalled Claude CLI, ubuntu-latest auto-installs as fallback
     runs-on: [self-hosted, Linux, fargate-runner]
     permissions:
       contents: read
@@ -33,15 +33,15 @@ jobs:
       - name: Run Claude Auto Review (single model)
         uses: gatellm-io/gatellm-code-review@v1
         with:
-          # 凭证：默认指向调用方 repo 同名 secret/var，无需显式传入
-          # 如需指向不同 secret/var，按需覆盖
+          # Credentials: default to the caller repo's same-named secret/var, no need to pass explicitly
+          # Override if pointing to a different secret/var
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
 
-          # 业务参数（均有默认值，按需覆盖）
+          # Business params (all have defaults; override as needed)
           # model: deepseek-v4-pro
           # max_lines: 10000
           # user_request: ""
-          # review_language: "English"   # 默认 English，空值/未支持的值回退到 English；如需中文传 "Simplified Chinese"
+          # review_language: "English"   # Default English; empty/unsupported value falls back to English; pass "Simplified Chinese" for Chinese
           # prompt: |
-          #   自定义 Review 提示词...
+          #   Custom review prompt...

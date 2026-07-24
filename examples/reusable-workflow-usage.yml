@@ -1,5 +1,5 @@
-# 示例：以 Reusable Workflow 形式调用 Claude Auto Review（支持多模型）
-# 把本文件放到调用方 repo 的 .github/workflows/pr-review.yml 即可使用
+# Example: invoking Claude Auto Review as a Reusable Workflow (supports multi-model)
+# Drop this file into the caller repo's .github/workflows/pr-review.yml to use.
 
 name: PR Review
 
@@ -12,22 +12,22 @@ on:
 jobs:
   claude-review:
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit   # 让 CODE_REVIEW_API_KEY 透传到 reusable workflow
+    secrets: inherit   # lets CODE_REVIEW_API_KEY pass through to the reusable workflow
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
 
-      # —— 单模型模式（默认）——
-      # 留空 models 即可，使用 model 单模型 review，输出直接发 PR 评论
+      # — Single-model mode (default) —
+      # Leave `models` empty; uses `model` for single-model review, output is posted directly as a PR comment
       # model: deepseek-v4-pro
 
-      # —— 多模型模式 ——
-      # 传入 ≥2 个模型启用并行 review + 汇总；最多 3 个，超出截断
+      # — Multi-model mode —
+      # Pass ≥2 models to enable parallel review + summary; max 3, extras truncated
       # models: "deepseek-v4-pro,claude-sonnet-4,glm-4-plus"
-      # summary_model: "claude-sonnet-4"   # 为空时取 models 的第一个
+      # summary_model: "claude-sonnet-4"   # empty takes the first of `models`
 
-      # —— 通用参数（均有默认值，按需覆盖）——
+      # — Common params (all have defaults; override as needed) —
       # max_lines: 10000
       # user_request: ""
-      # review_language: "English"   # 默认 English，空值/未支持的值回退到 English；如需中文传 "Simplified Chinese"
+      # review_language: "English"   # Default English; empty/unsupported value falls back to English; pass "Simplified Chinese" for Chinese
       # prompt: |
-      #   自定义 Review 提示词...
+      #   Custom review prompt...
