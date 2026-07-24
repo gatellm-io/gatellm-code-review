@@ -1,13 +1,13 @@
 # Claude Auto Review
 
-可复用的 GitHub Action，为 Pull Request 自动生成中文 Code Review。基于 `anthropics/claude-code-action@v1` 封装，额外提供：
+可复用的 GitHub Action，为 Pull Request 自动生成 Code Review。基于 `anthropics/claude-code-action@v1` 封装，额外提供：
 
 - **多模型并行 review + 汇总**：配置 ≥2 个模型时，每个模型独立 review，汇总 job 合并去重、标注置信度（`[共识 N/M]` / `[单模型]`）、重新编号 TODO 清单；为空时回退到单模型模式
 - PR 变更行数门槛（默认 10000 行），超限自动跳过；支持 manual re-run 强制执行
 - 执行前最小化历史 Claude 评论，避免噪音
 - Claude CLI 自动检测 + fallback 安装（self-hosted runner 已预装则直接复用）
 - Review 质量校验（评论过短自动重试一次）
-- 评论中文化约束 + `## TODO 修改清单` 机器可解析区块 + "Requires manual attention" 段落模板
+- 评论语言可参数化（`review_language`，默认 English，回退到 English）+ `## TODO 修改清单` 机器可解析区块 + "Requires manual attention" 段落模板
 
 ## 两种使用方式
 
@@ -83,7 +83,8 @@ jobs:
 | `model` | string | `""` | 单模型名（caller 可传 `${{ vars.CODE_REVIEW_MODEL }}` 或字面量；空 = 用 claude CLI 默认模型） |
 | `max_lines` | number | `10000` | PR 变更行数上限，超限跳过；`-1` 表示不限制 |
 | `user_request` | string | `""` | `@claude` 评论触发时的用户请求内容 |
-| `prompt` | string | （见 `action.yml`） | 自定义 Review 提示词 |
+| `review_language` | string | `"English"` | Review 评论语言（如 `English`、`Simplified Chinese`、`Traditional Chinese`、`Japanese`、`Korean`）；空值或未支持的值回退到 English |
+| `prompt` | string | （见 `action.yml`） | 自定义 Review 提示词（语言要求根据 `review_language` 单独注入，不写入 prompt 默认值） |
 
 ### Reusable Workflow inputs（`.github/workflows/claude-auto-review.yml`）
 
@@ -95,7 +96,8 @@ jobs:
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | 汇总模型名（多模型模式下使用；为空取 `models` 第一个） |
 | `max_lines` | number | `10000` | PR 变更行数上限，超限跳过；`-1` 表示不限制 |
 | `user_request` | string | `""` | `@claude` 评论触发时的用户请求内容 |
-| `prompt` | string | （见 workflow 文件） | 自定义 Review 提示词 |
+| `review_language` | string | `"English"` | Review 评论语言（如 `English`、`Simplified Chinese`、`Traditional Chinese`、`Japanese`、`Korean`）；空值或未支持的值回退到 English |
+| `prompt` | string | （见 workflow 文件） | 自定义 Review 提示词（语言要求根据 `review_language` 单独注入，不写入 prompt 默认值） |
 
 ## 调用方需要配置的 secrets / vars
 
@@ -169,7 +171,7 @@ setup job 根据解析后的 `models` 数量决定模式：
 
 ### Review 输出格式
 
-强制要求评论用简体中文撰写，结构：
+评论语言由 `review_language` 参数控制（默认 English，空值或未支持的值回退到 English；如需中文 review 传 `Simplified Chinese`）。结构：
 
 1. **Findings 分析**：按严重程度排序，带 `file:line` 引用；多模型模式下每条标注 `[共识 N/M]` 或 `[单模型]`
 2. **`## TODO 修改清单`**：机器可解析的固定格式，每条一行 `- [ ] **[TODO-n] [Pn] \`file:line\`** — 问题简述；修改要求：...`

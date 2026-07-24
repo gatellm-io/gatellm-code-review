@@ -29,15 +29,14 @@ inputs:
     description: "User request passed through when triggered by @claude comment (optional)."
     required: false
     default: ""
+  review_language:
+    description: "Language for review comments (e.g., 'English', 'Simplified Chinese', 'Traditional Chinese', 'Japanese', 'Korean'). Default 'English'. Empty or unsupported value falls back to English."
+    required: false
+    default: "English"
   prompt:
-    description: "Custom review prompt (optional, has default)."
+    description: "Custom review prompt (optional, has default). The language requirement is injected separately based on review_language."
     required: false
     default: |
-      **CRITICAL - Language Requirement:**
-      - All review comments MUST be written in Simplified Chinese
-      - English is allowed ONLY for: code snippets, technical terms when necessary, and file paths
-      - This is a mandatory requirement and must not be ignored
-
       Please review this pull request and provide feedback on:
       - Code quality and best practices
       - Potential bugs or issues
@@ -329,6 +328,11 @@ runs:
 
           ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
 
+          **CRITICAL - Language Requirement:**
+          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+          - Code snippets, technical terms, and file paths may remain in their original language
+          - This is a mandatory requirement and must not be ignored
+
           ${{ inputs.prompt }}
 
           Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
@@ -403,6 +407,11 @@ runs:
           gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
 
           ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+          **CRITICAL - Language Requirement:**
+          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+          - Code snippets, technical terms, and file paths may remain in their original language
+          - This is a mandatory requirement and must not be ignored
 
           ${{ inputs.prompt }}
 
@@ -479,6 +488,11 @@ runs:
 
           ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
 
+          **CRITICAL - Language Requirement:**
+          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+          - Code snippets, technical terms, and file paths may remain in their original language
+          - This is a mandatory requirement and must not be ignored
+
           ${{ inputs.prompt }}
 
           Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
@@ -552,6 +566,11 @@ runs:
           gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
 
           ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+          **CRITICAL - Language Requirement:**
+          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+          - Code snippets, technical terms, and file paths may remain in their original language
+          - This is a mandatory requirement and must not be ignored
 
           ${{ inputs.prompt }}
 
@@ -631,6 +650,11 @@ runs:
           gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
 
           ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+          **CRITICAL - Language Requirement:**
+          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+          - Code snippets, technical terms, and file paths may remain in their original language
+          - This is a mandatory requirement and must not be ignored
 
           ${{ inputs.prompt }}
 

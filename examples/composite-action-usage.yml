@@ -42,5 +42,6 @@ jobs:
           # model: deepseek-v4-pro
           # max_lines: 10000
           # user_request: ""
+          # review_language: "English"   # 默认 English，空值/未支持的值回退到 English；如需中文传 "Simplified Chinese"
           # prompt: |
           #   自定义 Review 提示词...

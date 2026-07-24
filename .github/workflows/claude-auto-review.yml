@@ -33,16 +33,16 @@ on:
         required: false
         type: string
         default: ""
+      review_language:
+        description: "Review 评论语言（如 'English'、'Simplified Chinese'、'Traditional Chinese'、'Japanese'、'Korean'）。默认 'English'，空值或未支持的值回退到 English"
+        required: false
+        type: string
+        default: "English"
       prompt:
-        description: "自定义Review提示词（可选，有默认值）"
+        description: "自定义Review提示词（可选，有默认值）。语言要求根据 review_language 单独注入，不写入 prompt 默认值。"
         required: false
         type: string
         default: |
-          **CRITICAL - Language Requirement:**
-          - All review comments MUST be written in Simplified Chinese
-          - English is allowed ONLY for: code snippets, technical terms when necessary, and file paths
-          - This is a mandatory requirement and must not be ignored
-
           Please review this pull request and provide feedback on:
           - Code quality and best practices
           - Potential bugs or issues
@@ -283,6 +283,11 @@ jobs:
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
 
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
+
             ${{ inputs.prompt }}
 
             ${{ needs.setup.outputs.mode == 'single' && 'Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.' || '' }}${{ needs.setup.outputs.mode == 'multi' && 'IMPORTANT: Do NOT post any comment to the PR. Instead, write your complete review in Markdown to the file `./claude-review-output.md` in the current working directory using the Write tool. The file content must be exactly the review body you would otherwise post, nothing else.' || '' }}
@@ -352,6 +357,11 @@ jobs:
             gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
 
             ${{ inputs.prompt }}
 
@@ -423,6 +433,11 @@ jobs:
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
 
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
+
             ${{ inputs.prompt }}
 
             ${{ needs.setup.outputs.mode == 'single' && 'Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.' || '' }}${{ needs.setup.outputs.mode == 'multi' && 'IMPORTANT: Do NOT post any comment to the PR. Instead, write your complete review in Markdown to the file `./claude-review-output.md` in the current working directory using the Write tool. The file content must be exactly the review body you would otherwise post, nothing else.' || '' }}
@@ -492,6 +507,11 @@ jobs:
             gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
 
             ${{ inputs.prompt }}
 
@@ -593,6 +613,11 @@ jobs:
             gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
+
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
 
             ${{ inputs.prompt }}
 
@@ -722,7 +747,12 @@ jobs:
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
 
-            以下是本次 review 使用的指南，其中的 **语言要求（简体中文）、TODO 修改清单格式、Output formatting 要求同样适用于你的汇总评论**：
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
+
+            以下是本次 review 使用的指南，其中的 **语言要求（${{ inputs.review_language || 'English' }}）、TODO 修改清单格式、Output formatting 要求同样适用于你的汇总评论**：
             <review-guidelines>
             ${{ inputs.prompt }}
             </review-guidelines>
@@ -819,7 +849,12 @@ jobs:
 
             ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
 
-            以下是本次 review 使用的指南，其中的 **语言要求（简体中文）、TODO 修改清单格式、Output formatting 要求同样适用于你的汇总评论**：
+            **CRITICAL - Language Requirement:**
+            - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
+            - Code snippets, technical terms, and file paths may remain in their original language
+            - This is a mandatory requirement and must not be ignored
+
+            以下是本次 review 使用的指南，其中的 **语言要求（${{ inputs.review_language || 'English' }}）、TODO 修改清单格式、Output formatting 要求同样适用于你的汇总评论**：
             <review-guidelines>
             ${{ inputs.prompt }}
             </review-guidelines>
