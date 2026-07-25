@@ -1,5 +1,5 @@
 name: "Claude Auto Review"
-description: "Pull request auto review powered by Claude Code. Wraps anthropics/claude-code-action with size gating, comment minimization, and short-result retry."
+description: "Pull request auto review powered by Claude Code. Wraps anthropics/claude-code-action with size gating and comment minimization."
 branding:
   icon: "eye"
   color: "purple"
@@ -124,7 +124,7 @@ runs:
 
     - name: Check PR size
       id: check
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      uses: actions/github-script@v9
       with:
         script: |
           const runAttempt = parseInt('${{ github.run_attempt }}');
@@ -156,7 +156,7 @@ runs:
 
     - name: Checkout repository
       if: steps.check.outputs.too_large != 'true'
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      uses: actions/checkout@v7
       with:
         # For issue_comment events, default checkout pulls the default branch (no PR changes).
         # Explicitly checkout PR head sha so the working tree has the PR's actual code.
@@ -166,7 +166,7 @@ runs:
 
     - name: Minimize old Claude comments
       if: steps.check.outputs.too_large != 'true'
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      uses: actions/github-script@v9
       with:
         script: |
           const { owner, repo } = context.repo;
@@ -299,337 +299,14 @@ runs:
         echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
         echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
-    - name: Automatic PR Review (attempt 1/4)
+    - name: Automatic PR Review
       id: review_1
       if: steps.check.outputs.too_large != 'true'
-      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
-      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
-        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
-        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
-      with:
-        github_token: ${{ inputs.github_token }}
-        anthropic_api_key: ${{ inputs.anthropic_api_key }}
-        track_progress: true
-        path_to_claude_code_executable: ${{ steps.resolve.outputs.claude_path }}
-        prompt: |
-          REPO: ${{ github.repository }}
-          PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-
-          Before starting your review, run these commands to load context:
-
-          1. Load your last review comment (to avoid repeating findings and build on previous feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
-
-          2. Load all user comments on this PR (to ensure you don't miss user feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
-
-          ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
-
-          **CRITICAL - Language Requirement:**
-          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
-          - Code snippets, technical terms, and file paths may remain in their original language
-          - This is a mandatory requirement and must not be ignored
-
-          ${{ inputs.prompt }}
-
-          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
-        claude_args: |
-          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*),Bash(gh pr checks:*),Bash(gh repo view:*)"
-          --model ${{ inputs.model }}
-
-    - name: Wait & minimize before retry (after attempt 1)
-      if: steps.check.outputs.too_large != 'true' && steps.review_1.outcome == 'failure'
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-      with:
-        script: |
-          core.info('Sleeping 60s before retry to let API rate limits / overloaded errors recover...');
-          await new Promise(r => setTimeout(r, 60000));
-          const { owner, repo } = context.repo;
-          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-          const { data: comments } = await github.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: prNumber,
-          });
-          const claudeComments = comments.filter(
-            (c) =>
-              c.user.login.toLowerCase().includes('claude') ||
-              (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
-          );
-          for (const comment of claudeComments) {
-            await github.graphql(
-              `
-            mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
-              minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
-                minimizedComment {
-                  isMinimized
-                  minimizedReason
-                }
-              }
-            }
-            `,
-              {
-                subjectId: comment.node_id,
-                classifier: 'OUTDATED',
-              },
-            );
-            core.info(`Minimized old Claude comment: ${comment.id}`);
-          }
-
-    - name: Automatic PR Review (attempt 2/4)
-      id: review_2
-      if: steps.check.outputs.too_large != 'true' && steps.review_1.outcome == 'failure'
-      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
-      continue-on-error: true
-      env:
-        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
-        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
-        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
-      with:
-        github_token: ${{ inputs.github_token }}
-        anthropic_api_key: ${{ inputs.anthropic_api_key }}
-        track_progress: true
-        path_to_claude_code_executable: ${{ steps.resolve.outputs.claude_path }}
-        prompt: |
-          REPO: ${{ github.repository }}
-          PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-
-          Before starting your review, run these commands to load context:
-
-          1. Load your last review comment (to avoid repeating findings and build on previous feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
-
-          2. Load all user comments on this PR (to ensure you don't miss user feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
-
-          ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
-
-          **CRITICAL - Language Requirement:**
-          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
-          - Code snippets, technical terms, and file paths may remain in their original language
-          - This is a mandatory requirement and must not be ignored
-
-          ${{ inputs.prompt }}
-
-          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
-        claude_args: |
-          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*),Bash(gh pr checks:*),Bash(gh repo view:*)"
-          --model ${{ inputs.model }}
-
-    - name: Wait & minimize before retry (after attempt 2)
-      if: steps.check.outputs.too_large != 'true' && steps.review_2.outcome == 'failure'
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-      with:
-        script: |
-          core.info('Sleeping 60s before retry to let API rate limits / overloaded errors recover...');
-          await new Promise(r => setTimeout(r, 60000));
-          const { owner, repo } = context.repo;
-          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-          const { data: comments } = await github.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: prNumber,
-          });
-          const claudeComments = comments.filter(
-            (c) =>
-              c.user.login.toLowerCase().includes('claude') ||
-              (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
-          );
-          for (const comment of claudeComments) {
-            await github.graphql(
-              `
-            mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
-              minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
-                minimizedComment {
-                  isMinimized
-                  minimizedReason
-                }
-              }
-            }
-            `,
-              {
-                subjectId: comment.node_id,
-                classifier: 'OUTDATED',
-              },
-            );
-            core.info(`Minimized old Claude comment: ${comment.id}`);
-          }
-
-    - name: Automatic PR Review (attempt 3/4)
-      id: review_3
-      if: steps.check.outputs.too_large != 'true' && steps.review_2.outcome == 'failure'
-      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
-      continue-on-error: true
-      env:
-        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
-        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
-        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
-      with:
-        github_token: ${{ inputs.github_token }}
-        anthropic_api_key: ${{ inputs.anthropic_api_key }}
-        track_progress: true
-        path_to_claude_code_executable: ${{ steps.resolve.outputs.claude_path }}
-        prompt: |
-          REPO: ${{ github.repository }}
-          PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-
-          Before starting your review, run these commands to load context:
-
-          1. Load your last review comment (to avoid repeating findings and build on previous feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
-
-          2. Load all user comments on this PR (to ensure you don't miss user feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
-
-          ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
-
-          **CRITICAL - Language Requirement:**
-          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
-          - Code snippets, technical terms, and file paths may remain in their original language
-          - This is a mandatory requirement and must not be ignored
-
-          ${{ inputs.prompt }}
-
-          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
-        claude_args: |
-          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*),Bash(gh pr checks:*),Bash(gh repo view:*)"
-          --model ${{ inputs.model }}
-
-    - name: Wait & minimize before retry (after attempt 3)
-      if: steps.check.outputs.too_large != 'true' && steps.review_3.outcome == 'failure'
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-      with:
-        script: |
-          core.info('Sleeping 60s before retry to let API rate limits / overloaded errors recover...');
-          await new Promise(r => setTimeout(r, 60000));
-          const { owner, repo } = context.repo;
-          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-          const { data: comments } = await github.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: prNumber,
-          });
-          const claudeComments = comments.filter(
-            (c) =>
-              c.user.login.toLowerCase().includes('claude') ||
-              (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
-          );
-          for (const comment of claudeComments) {
-            await github.graphql(
-              `
-            mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
-              minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
-                minimizedComment {
-                  isMinimized
-                  minimizedReason
-                }
-              }
-            }
-            `,
-              {
-                subjectId: comment.node_id,
-                classifier: 'OUTDATED',
-              },
-            );
-            core.info(`Minimized old Claude comment: ${comment.id}`);
-          }
-
-    - name: Automatic PR Review (attempt 4/4 - final)
-      id: review_4
-      if: steps.check.outputs.too_large != 'true' && steps.review_3.outcome == 'failure'
-      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
-      env:
-        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
-        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
-        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
-      with:
-        github_token: ${{ inputs.github_token }}
-        anthropic_api_key: ${{ inputs.anthropic_api_key }}
-        track_progress: true
-        path_to_claude_code_executable: ${{ steps.resolve.outputs.claude_path }}
-        prompt: |
-          REPO: ${{ github.repository }}
-          PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-
-          Before starting your review, run these commands to load context:
-
-          1. Load your last review comment (to avoid repeating findings and build on previous feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login == "github-actions[bot]")] | last | .body'
-
-          2. Load all user comments on this PR (to ensure you don't miss user feedback):
-          gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number || github.event.issue.number }}/comments --jq '[.[] | select(.user.login != "github-actions[bot]" and (.user.login | test("claude"; "i") | not) and .user.login != "cycode-security")] | .[] | "--- User: \(.user.login) ---\n\(.body)"'
-
-          ${{ inputs.user_request != '' && format('User request: {0}\n', inputs.user_request) || '' }}
-
-          **CRITICAL - Language Requirement:**
-          - All review comments MUST be written in ${{ inputs.review_language || 'English' }}
-          - Code snippets, technical terms, and file paths may remain in their original language
-          - This is a mandatory requirement and must not be ignored
-
-          ${{ inputs.prompt }}
-
-          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
-        claude_args: |
-          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*),Bash(gh pr checks:*),Bash(gh repo view:*)"
-          --model ${{ inputs.model }}
-
-    - name: Check review quality
-      if: steps.check.outputs.too_large != 'true' && (steps.review_1.outcome == 'success' || steps.review_2.outcome == 'success' || steps.review_3.outcome == 'success' || steps.review_4.outcome == 'success')
-      id: quality
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-      with:
-        script: |
-          const { owner, repo } = context.repo;
-          const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-
-          const { data: comments } = await github.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: prNumber,
-          });
-
-          const claudeComments = comments
-            .filter(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude'))
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-          if (claudeComments.length === 0) {
-            core.warning('No Claude review comment found, will retry.');
-            core.setOutput('too_short', 'true');
-            return;
-          }
-
-          const latest = claudeComments[0];
-          const len = latest.body.length;
-          core.info(`Latest review comment length: ${len} chars`);
-
-          if (len < 100) {
-            core.warning(`Review too short (${len} chars < 100), will retry.`);
-            core.setOutput('too_short', 'true');
-            await github.graphql(`
-              mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
-                minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
-                  minimizedComment { isMinimized }
-                }
-              }
-            `, { subjectId: latest.node_id, classifier: 'OUTDATED' });
-            core.info(`Minimized low-quality comment: ${latest.id}`);
-          } else {
-            core.info('Review quality check passed.');
-            core.setOutput('too_short', 'false');
-          }
-
-    - name: Retry PR Review (short result)
-      if: steps.quality.outputs.too_short == 'true'
-      uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1.0.181
-      env:
-        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        ANTHROPIC_CUSTOM_HEADERS: "User-Agent: gatellm-claude-code-review"
         CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 1
         CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1
       with:
