@@ -1,22 +1,26 @@
 # Claude Auto Review
 
-可复用的 GitHub Action，为 Pull Request 自动生成中文 Code Review。基于 `anthropics/claude-code-action@v1` 封装，额外提供：
+**Languages:** [English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Русский](README.ru.md) | [Português](README.pt.md)
 
-- **多模型并行 review + 汇总**：配置 ≥2 个模型时，每个模型独立 review，汇总 job 合并去重、标注置信度（`[共识 N/M]` / `[单模型]`）、重新编号 TODO 清单；为空时回退到单模型模式
-- PR 变更行数门槛（默认 10000 行），超限自动跳过；支持 manual re-run 强制执行
-- 执行前最小化历史 Claude 评论，避免噪音
-- Claude CLI 自动检测 + fallback 安装（self-hosted runner 已预装则直接复用）
-- Review 质量校验（评论过短自动重试一次）
-- 评论中文化约束 + `## TODO 修改清单` 机器可解析区块 + "Requires manual attention" 段落模板
+> The English version is the authoritative source. Other languages are community translations and may lag behind.
 
-## 两种使用方式
+A reusable GitHub Action that auto-generates code review for pull requests. Wraps `anthropics/claude-code-action@v1` and adds:
 
-### 方式 1：Composite Action（单模型轻量场景）
+- **Multi-model parallel review + summary**: when ≥2 models are configured, each model reviews independently; the summarize job merges and deduplicates findings, annotates confidence (`[Consensus N/M]` / `[Single model]`), and renumbers the TODO list. Empty config falls back to single-model mode.
+- PR changed-lines threshold (default 10000); auto-skips when exceeded; supports manual re-run to force execution.
+- Minimizes historical Claude comments before each run to keep PR noise low.
+- Claude CLI auto-detection + fallback install (reuses preinstalled CLI on self-hosted runners).
+- Review quality check (auto-retries once when the comment is too short).
+- Parameterizable review language (`review_language`, default English, falls back to English) + machine-parseable `## TODO Fix List` block + "Requires manual attention" section template.
 
-把 action 作为一步嵌入到调用方现有的 PR workflow 里，灵活度最高。**只支持单模型 review**，输出直接发 PR 评论。
+## Two usage modes
+
+### Mode 1: Composite Action (lightweight single-model scenarios)
+
+Embed the action as one step in your existing PR workflow. Maximum flexibility. **Single-model review only**; output is posted directly as a PR comment.
 
 ```yaml
-# .github/workflows/pr-review.yml（调用方 repo）
+# .github/workflows/pr-review.yml (caller repo)
 name: PR Review
 on:
   pull_request:
@@ -26,7 +30,7 @@ on:
 
 jobs:
   claude-review:
-    runs-on: [self-hosted, Linux, fargate-runner]   # 或 ubuntu-latest
+    runs-on: [self-hosted, Linux, fargate-runner]   # or ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
@@ -43,15 +47,15 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
-          # 其余 inputs 均有默认值，按需覆盖
+          # All other inputs have defaults; override as needed
 ```
 
-### 方式 2：Reusable Workflow（推荐，支持多模型）
+### Mode 2: Reusable Workflow (recommended, supports multi-model)
 
-整体调用 `setup → review(matrix) → summarize` 三段式 workflow。**支持多模型并行 review 和汇总**，省去自己配 `permissions` / `concurrency` / `runs-on` 的麻烦。
+Calls the full `setup → review(matrix) → summarize` three-stage workflow. **Supports multi-model parallel review and summarization**; saves you from configuring `permissions` / `concurrency` / `runs-on` yourself.
 
 ```yaml
-# .github/workflows/pr-review.yml（调用方 repo）
+# .github/workflows/pr-review.yml (caller repo)
 name: PR Review
 on:
   pull_request:
@@ -62,58 +66,60 @@ on:
 jobs:
   claude-review:
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit           # 让 CODE_REVIEW_API_KEY 透传
+    secrets: inherit           # lets CODE_REVIEW_API_KEY pass through
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
-      # 单模型：留空 models 即可回退到 model
-      # 多模型：传入逗号分隔的模型列表
+      # Single model: leave `models` empty to fall back to `model`
+      # Multi-model: pass a comma-separated model list
       # models: "deepseek-v4-pro,claude-sonnet-4,glm-4-plus"
       # summary_model: "claude-sonnet-4"
 ```
 
 ## Inputs
 
-### Composite Action inputs（`action.yml`）
+### Composite Action inputs (`action.yml`)
 
-| 名称 | 类型 | 默认值 | 说明 |
+| Name | Type | Default | Description |
 |---|---|---|---|
-| `anthropic_api_key` | string | `""` | Anthropic API key（caller 必须显式传，e.g. `${{ secrets.CODE_REVIEW_API_KEY }}`） |
-| `anthropic_base_url` | string | `""` | Anthropic API base URL（caller 必须显式传，e.g. `${{ vars.CODE_REVIEW_BASE_URL }}`；对接代理/网关时使用） |
-| `github_token` | string | `${{ github.token }}` | GitHub token，需 `pull-requests: write`、`issues: write`、`actions: read` |
-| `model` | string | `""` | 单模型名（caller 可传 `${{ vars.CODE_REVIEW_MODEL }}` 或字面量；空 = 用 claude CLI 默认模型） |
-| `max_lines` | number | `10000` | PR 变更行数上限，超限跳过；`-1` 表示不限制 |
-| `user_request` | string | `""` | `@claude` 评论触发时的用户请求内容 |
-| `prompt` | string | （见 `action.yml`） | 自定义 Review 提示词 |
+| `anthropic_api_key` | string | `""` | Anthropic API key (caller must pass explicitly, e.g. `${{ secrets.CODE_REVIEW_API_KEY }}`) |
+| `anthropic_base_url` | string | `""` | Anthropic API base URL (caller must pass explicitly, e.g. `${{ vars.CODE_REVIEW_BASE_URL }}`; used when proxying through a gateway) |
+| `github_token` | string | `${{ github.token }}` | GitHub token; needs `pull-requests: write`, `issues: write`, `actions: read` |
+| `model` | string | `""` | Single model name (caller may pass `${{ vars.CODE_REVIEW_MODEL }}` or a literal; empty = use the Claude CLI default model) |
+| `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
+| `user_request` | string | `""` | User request content when triggered by `@claude` comment |
+| `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
+| `prompt` | string | (see `action.yml`) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
 
-### Reusable Workflow inputs（`.github/workflows/claude-auto-review.yml`）
+### Reusable Workflow inputs (`.github/workflows/claude-auto-review.yml`)
 
-| 名称 | 类型 | 默认值 | 说明 |
+| Name | Type | Default | Description |
 |---|---|---|---|
-| `runs_on` | string | `"self-hosted, Linux, fargate-runner"` | Runner 标签，逗号分隔或单标签；应用于 setup/review/summarize 三个 job |
-| `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | 单模型名（`models` 为空时使用） |
-| `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | 逗号分隔的模型列表（≥2 个启用多模型并行；最多 3 个，超出截断） |
-| `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | 汇总模型名（多模型模式下使用；为空取 `models` 第一个） |
-| `max_lines` | number | `10000` | PR 变更行数上限，超限跳过；`-1` 表示不限制 |
-| `user_request` | string | `""` | `@claude` 评论触发时的用户请求内容 |
-| `prompt` | string | （见 workflow 文件） | 自定义 Review 提示词 |
+| `runs_on` | string | `"self-hosted, Linux, fargate-runner"` | Runner labels, comma-separated or a single label; applied to setup/review/summarize jobs |
+| `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | Single model name (used when `models` is empty) |
+| `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | Comma-separated model list (≥2 enables multi-model parallel mode; max 3, extras truncated) |
+| `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | Summary model name (used in multi-model mode; empty takes the first of `models`) |
+| `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
+| `user_request` | string | `""` | User request content when triggered by `@claude` comment |
+| `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
+| `prompt` | string | (see workflow file) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
 
-## 调用方需要配置的 secrets / vars
+## Secrets / vars the caller must configure
 
-调用方 repo 需要在 Settings → Secrets and variables → Actions 中配置：
+The caller repo needs the following in Settings → Secrets and variables → Actions:
 
-| 类型 | 名称 | 必填 | 用途 |
+| Type | Name | Required | Purpose |
 |---|---|---|---|
 | Secret | `CODE_REVIEW_API_KEY` | ✅ | Anthropic API key |
-| Variable | `CODE_REVIEW_BASE_URL` | 视情况 | 对接代理/网关时使用，直连官方 API 可不设 |
-| Variable | `CODE_REVIEW_MODEL` | 否 | 单模型模式下的默认模型名 |
-| Variable | `CODE_REVIEW_MODELS` | 否 | 多模型模式下的逗号分隔列表 |
-| Variable | `CODE_REVIEW_SUMMARY_MODEL` | 否 | 多模型模式下的汇总模型名 |
+| Variable | `CODE_REVIEW_BASE_URL` | Optional | Used when proxying through a gateway; can be omitted when hitting the official API directly |
+| Variable | `CODE_REVIEW_MODEL` | No | Default model name in single-model mode |
+| Variable | `CODE_REVIEW_MODELS` | No | Comma-separated list in multi-model mode |
+| Variable | `CODE_REVIEW_SUMMARY_MODEL` | No | Summary model name in multi-model mode |
 
-> 若所有 repo 都希望共享同一份凭证，可考虑用 [Organization-level secrets and variables](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-organization)。
+> To share the same credentials across all repos in an org, consider [Organization-level secrets and variables](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-organization).
 
-## 权限要求
+## Permission requirements
 
-调用方 job 的 `permissions` 必须包含：
+The caller job's `permissions` must include:
 
 ```yaml
 permissions:
@@ -123,71 +129,71 @@ permissions:
   actions: read
 ```
 
-Composite action 自身不设 `permissions`，由调用方 job 控制。Reusable workflow 在三个 job 上各自设了 `permissions`（`setup` 仅 `contents: read` + `pull-requests: read`，`review`/`summarize` 同上完整 4 项）。
+The composite action itself does not set `permissions`; the caller job controls them. The reusable workflow sets `permissions` on each of its three jobs (`setup` only needs `contents: read` + `pull-requests: read`; `review`/`summarize` need the full set above).
 
-## 版本管理
+## Versioning
 
-- `v1`：滚动 tag，指向最新的 1.x 版本
-- `v1.0.0` 等语义化 tag：锁定精确版本
-- `main`：开发分支，不建议在生产使用
+- `v1`: rolling tag, points to the latest 1.x release
+- `v1.0.0` etc.: semantic tags that pin an exact version
+- `main`: development branch, not recommended for production use
 
-发布流程：
+Release flow:
 
 ```bash
 git tag v1.1.0
 git push origin v1.1.0
-# 移动滚动 tag
+# Move the rolling tag
 git tag -f v1 v1.1.0
 git push origin v1 --force
 ```
 
-## 行为说明
+## Behavior notes
 
-### 模式判定（仅 reusable workflow）
+### Mode resolution (reusable workflow only)
 
-setup job 根据解析后的 `models` 数量决定模式：
+The setup job decides the mode based on the parsed `models` count:
 
-- `models` 解析后 ≥2 个 → `mode=multi`：matrix 并行 review，结果写到 `./claude-review-output.md` 打包成 artifact；`summarize` job 下载所有 artifact，合并、去重、置信度标注后发一条汇总评论
-- `models` 解析后 ≤1 个 → `mode=single`：单模型 review，直接发 PR 评论，含质量校验和短结果重试
+- `models` parses to ≥2 → `mode=multi`: matrix parallel review; results are written to `./claude-review-output.md`, packaged as an artifact; the `summarize` job downloads all artifacts, merges, deduplicates, annotates confidence, and posts one summary comment.
+- `models` parses to ≤1 → `mode=single`: single-model review, posts a PR comment directly, with quality check and short-result retry.
 
-> Composite action 永远是单模型模式，行为等价于 `mode=single`。
+> The composite action is always single-model mode, equivalent to `mode=single`.
 
-### PR 变更行数门槛
+### PR changed-lines threshold
 
-- `max_lines > 0`：PR `additions + deletions` 超过此值则跳过 review；手动 re-run 时跳过门槛检查
-- `max_lines == -1`：不限制
-- `max_lines == 0`：禁止任何 PR
+- `max_lines > 0`: skip review if PR `additions + deletions` exceeds this value; manual re-run skips the threshold check.
+- `max_lines == -1`: unlimited.
+- `max_lines == 0`: rejects any PR.
 
-### 评论最小化
+### Comment minimization
 
-每次 review 前会调用 GraphQL `minimizeComment`，把历史 Claude 评论标记为 `OUTDATED` 折叠掉；若 review 后发现评论字数 < 100，会自动最小化并重试一次。多模型模式下此逻辑在 `summarize` job 执行。
+Before each review, calls GraphQL `minimizeComment` to fold historical Claude comments as `OUTDATED`. If a review comment ends up shorter than 100 chars, it's auto-minimized and retried once. In multi-model mode, this logic runs in the `summarize` job.
 
-### Claude CLI 安装
+### Claude CLI install
 
-- Runner 已预装 Claude CLI（典型 self-hosted 场景）：直接复用
-- Runner 未预装（典型 `ubuntu-latest` 场景）：`action.yml` 先尝试 `npm install -g @anthropic-ai/claude-code`，失败再 fallback 到 `curl -fsSL https://claude.ai/install.sh | bash`（npm 不受 Claude.ai geo-block 影响，推荐）；reusable workflow 当前仅检测 PATH，不安装（依赖 self-hosted runner 预装）
+- Runner has Claude CLI preinstalled (typical self-hosted case): reused directly.
+- Runner doesn't (typical `ubuntu-latest` case): `action.yml` first tries `npm install -g @anthropic-ai/claude-code`, then falls back to `curl -fsSL https://claude.ai/install.sh | bash` (npm isn't affected by Claude.ai geo-block, recommended). The reusable workflow only detects PATH and doesn't install (relies on self-hosted runner preinstall).
 
-### Review 输出格式
+### Review output format
 
-强制要求评论用简体中文撰写，结构：
+Comment language is controlled by `review_language` (default English; empty or unsupported value falls back to English; pass `Simplified Chinese` for Chinese reviews). Structure:
 
-1. **Findings 分析**：按严重程度排序，带 `file:line` 引用；多模型模式下每条标注 `[共识 N/M]` 或 `[单模型]`
-2. **`## TODO 修改清单`**：机器可解析的固定格式，每条一行 `- [ ] **[TODO-n] [Pn] \`file:line\`** — 问题简述；修改要求：...`
-   - 严重性分级：`[P0]` 严重 bug/安全；`[P1]` 逻辑风险/行为回归；`[P2]` 性能/测试缺失；`[P3]` 风格
-   - 多模型汇总时合并去重后重新编号为连续 `TODO-1..n`，共识标注加在严重性后
-3. **Requires manual attention**：需要人工复核的项
-4. **（仅多模型）** 底部折叠块附各模型原始 review
+1. **Findings analysis**: ordered by severity, with `file:line` references; in multi-model mode each finding is annotated with `[Consensus N/M]` or `[Single model]`.
+2. **`## TODO Fix List`**: machine-parseable fixed format, one line per entry: `- [ ] **[TODO-n] [Pn] \`file:line\`** — Issue summary; Fix requirement: ...`
+   - Severity grading: `[P0]` critical bug / security; `[P1]` logic risk / behavioral regression; `[P2]` performance / missing tests; `[P3]` style.
+   - In multi-model summary, entries are merged, deduplicated, and renumbered as continuous `TODO-1..n`; consensus annotations go after the severity tag.
+3. **Requires manual attention**: items that need human review.
+4. **(Multi-model only)** Collapsed blocks at the bottom with each model's original review.
 
-详见 `action.yml` / workflow 文件的 `prompt` 默认值。
+See the `prompt` defaults in `action.yml` / the workflow file for full details.
 
-## 本地校验
+## Local validation
 
 ```bash
-# YAML 语法校验
+# YAML syntax check
 python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/claude-auto-review.yml'))"
 
-# actionlint（如已安装）
+# actionlint (if installed)
 actionlint
 ```
 
