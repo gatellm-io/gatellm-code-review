@@ -339,3 +339,35 @@ runs:
         claude_args: |
           --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*),Bash(gh pr checks:*),Bash(gh repo view:*)"
           --model ${{ inputs.model }}
+
+    - name: Relocate execution log
+      id: relocate_review_log
+      if: always()
+      shell: bash
+      run: |
+        src="${{ steps.review_1.outputs.execution_file }}"
+        if [ -z "$src" ] || [ ! -f "$src" ]; then
+          echo "No execution file found (steps.review_1.outputs.execution_file empty or missing); skipping"
+          echo "dst=" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        proj_dir=$(ls -td ~/.claude/projects/*/ 2>/dev/null | head -1)
+        sid="unknown"
+        if [ -n "$proj_dir" ]; then
+          latest=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
+          [ -n "$latest" ] && sid=$(basename "$latest" .jsonl)
+        fi
+        dst="/tmp/claude-execution-output-${sid}-${{ github.run_id }}-attempt${{ github.run_attempt }}.json"
+        cp "$src" "$dst"
+        echo "Copied execution log to $dst"
+        echo "dst=$dst" >> $GITHUB_OUTPUT
+
+    - name: Upload execution log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: claude-exec-log
+        path: /tmp/claude-execution-output-*.json
+        retention-days: 3
+        overwrite: true
+        if-no-files-found: ignore
