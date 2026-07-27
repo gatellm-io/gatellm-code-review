@@ -110,6 +110,11 @@ on:
 
           When reviewing a PR, use gh command to fetch remote content, like GH_PAGER="cat" gh pr view xxx
 
+    secrets:
+      CODE_REVIEW_API_KEY:
+        description: "Anthropic API key. Caller must pass explicitly, e.g. secrets: CODE_REVIEW_API_KEY: ${{ secrets.CODE_REVIEW_API_KEY }}. NOTE: `secrets: inherit` only passes secrets within the same org/enterprise; cross-org callers (e.g. mibotech-ai consuming this gatellm-io workflow) MUST pass this explicitly or ANTHROPIC_API_KEY will be empty."
+        required: false
+
 jobs:
   setup:
     runs-on: ${{ inputs.runs_on }}
