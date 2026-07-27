@@ -11,6 +11,12 @@ on:
 
 jobs:
   claude-review:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.user.type != 'Bot' &&
+       contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
     secrets: inherit   # lets CODE_REVIEW_API_KEY pass through to the reusable workflow
     with:
