@@ -351,10 +351,14 @@ runs:
           echo "dst=" >> $GITHUB_OUTPUT
           exit 0
         fi
-        proj_dir=$(ls -td ~/.claude/projects/*/ 2>/dev/null | head -1)
+        # `|| true` guards the glob lookup: on GitHub Actions HOME is overridden to a
+        # temp dir, so ~/.claude/projects/*/ may not exist -> ls exits 2, and under
+        # `set -e -o pipefail` the assignment would abort the script before sid's
+        # "unknown" fallback can apply. sid is cosmetic (artifact filename only).
+        proj_dir=$(ls -td ~/.claude/projects/*/ 2>/dev/null | head -1 || true)
         sid="unknown"
         if [ -n "$proj_dir" ]; then
-          latest=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
+          latest=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1 || true)
           [ -n "$latest" ] && sid=$(basename "$latest" .jsonl)
         fi
         dst="/tmp/claude-execution-output-${sid}-${{ github.run_id }}-attempt${{ github.run_attempt }}.json"
