@@ -30,6 +30,12 @@ on:
 
 jobs:
   claude-review:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.user.type != 'Bot' &&
+       contains(github.event.comment.body, '@claude'))
     runs-on: [self-hosted, Linux, fargate-runner]   # 或 ubuntu-latest
     permissions:
       contents: read
@@ -37,10 +43,10 @@ jobs:
       issues: write
       actions: read
     concurrency:
-      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: gatellm-io/gatellm-code-review@v1
@@ -65,6 +71,12 @@ on:
 
 jobs:
   claude-review:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.user.type != 'Bot' &&
+       contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
     secrets: inherit           # 讓 CODE_REVIEW_API_KEY 通過
     with:
