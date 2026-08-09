@@ -45,8 +45,11 @@ jobs:
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
 
+          # Model is required in practice: the action fails fast when it is empty.
+          # Pass vars.CODE_REVIEW_MODEL or a literal model name.
+          model: ${{ vars.CODE_REVIEW_MODEL }}
+
           # Business params (all have defaults; override as needed)
-          # model: deepseek-v4-pro
           # max_lines: 10000
           # user_request: ""
           # review_language: "English"   # Default English; empty/unsupported value falls back to English; pass "Simplified Chinese" for Chinese

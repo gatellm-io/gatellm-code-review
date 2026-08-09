@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       model:
-        description: "Single model name (backward compatible; used when models is empty, defaults to deepseek-v4-pro)"
+        description: "Single model name (backward compatible; used when models is empty; empty falls back to the Claude CLI default model)"
         required: false
         type: string
         default: ${{ vars.CODE_REVIEW_MODEL }}

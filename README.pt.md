@@ -10,7 +10,6 @@ Uma GitHub Action reutilizável que gera automaticamente revisão de código par
 - Limite de linhas alteradas do PR (padrão 10000); ignora automaticamente quando excedido; suporta reexecução manual para forçar a execução.
 - Minimiza comentários históricos do Claude antes de cada execução para manter o ruído do PR baixo.
 - Detecção automática + instalação de fallback do Claude CLI (reutiliza o CLI pré-instalado em runners auto-hospedados).
-- Verificação de qualidade da revisão (retries automáticos uma vez quando o comentário é muito curto).
 - Idioma da revisão parametrizável (`review_language`, padrão inglês, cai para inglês) + bloco `## TODO Fix List` parseável por máquina + template da seção "Requires manual attention".
 
 ## Dois modos de uso
@@ -53,7 +52,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
-          # Todas as outras entradas têm padrões; sobrescreva conforme necessário
+          model: ${{ vars.CODE_REVIEW_MODEL }}   # na prática obrigatório; vazio faz a execução falhar
+          # As demais entradas têm padrões; sobrescreva conforme necessário
 ```
 
 ### Modo 2: Reusable Workflow (recomendado, suporta multi-modelo)
@@ -78,7 +78,10 @@ jobs:
        github.event.comment.user.type != 'Bot' &&
        contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit           # permite que CODE_REVIEW_API_KEY passe
+    # OBSERVAÇÃO: `secrets: inherit` só repassa secrets dentro da MESMA organização/enterprise.
+    # Chamadores de outras organizações DEVEM passar a chave de API explicitamente, senão ANTHROPIC_API_KEY ficará vazio.
+    secrets:
+      CODE_REVIEW_API_KEY: ${{ secrets.CODE_REVIEW_API_KEY }}
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
       # Modelo único: deixe `models` vazio para cair para `model`
@@ -96,7 +99,7 @@ jobs:
 | `anthropic_api_key` | string | `""` | Chave da API da Anthropic (o chamador deve passar explicitamente, ex. `${{ secrets.CODE_REVIEW_API_KEY }}`) |
 | `anthropic_base_url` | string | `""` | URL base da API da Anthropic (o chamador deve passar explicitamente, ex. `${{ vars.CODE_REVIEW_BASE_URL }}`; usado ao proxyar por um gateway) |
 | `github_token` | string | `${{ github.token }}` | Token do GitHub; precisa de `pull-requests: write`, `issues: write`, `actions: read` |
-| `model` | string | `""` | Nome do modelo único (o chamador pode passar `${{ vars.CODE_REVIEW_MODEL }}` ou um literal; vazio = usar o modelo padrão do Claude CLI) |
+| `model` | string | `""` | Nome do modelo único (na prática OBRIGATÓRIO: passe `${{ vars.CODE_REVIEW_MODEL }}` ou um literal; vazio faz a execução falhar — sem fallback silencioso para o modelo padrão do CLI). O sufixo `[1m]` indica a variante com janela de contexto de 1M tokens, recomendada para PRs grandes |
 | `max_lines` | número | `10000` | Máximo de linhas alteradas do PR; ignora a revisão se excedido; `-1` significa ilimitado |
 | `user_request` | string | `""` | Conteúdo da solicitação do usuário quando acionado por comentário `@claude` |
 | `review_language` | string | `"English"` | Idioma do comentário de revisão (ex. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); valor vazio ou não suportado cai para inglês |
@@ -106,7 +109,7 @@ jobs:
 
 | Nome | Tipo | Padrão | Descrição |
 |---|---|---|---|
-| `runs_on` | string | `"self-hosted, Linux, fargate-runner"` | Labels do runner, separadas por vírgulas ou um único label; aplicado aos jobs setup/review/summarize |
+| `runs_on` | string | — (obrigatório) | Labels do runner, separadas por vírgulas ou um único label; aplicado aos jobs setup/review/summarize. Sem padrão — o chamador deve passar explicitamente |
 | `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | Nome do modelo único (usado quando `models` está vazio) |
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | Lista de modelos separada por vírgulas (≥2 habilita o modo paralelo multi-modelo; máximo 3, extras truncados) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | Nome do modelo de sumário (usado no modo multi-modelo; vazio pega o primeiro de `models`) |
@@ -166,7 +169,7 @@ git push origin v1 --force
 O job setup decide o modo com base na contagem de `models` parseada:
 
 - `models` parseia para ≥2 → `mode=multi`: revisão paralela em matrix; resultados são escritos em `./claude-review-output.md`, empacotados como artifact; o job `summarize` baixa todos os artifacts, mescla, deduplica, anota a confiança e publica um comentário de sumário.
-- `models` parseia para ≤1 → `mode=single`: revisão de modelo único, publica um comentário de PR diretamente, com verificação de qualidade e retry em resultados curtos.
+- `models` parseia para ≤1 → `mode=single`: revisão de modelo único, publica um comentário de PR diretamente.
 
 > A composite action está sempre no modo de modelo único, equivalente a `mode=single`.
 
@@ -174,16 +177,16 @@ O job setup decide o modo com base na contagem de `models` parseada:
 
 - `max_lines > 0`: ignora a revisão se `additions + deletions` do PR exceder este valor; a reexecução manual ignora a verificação do limite.
 - `max_lines == -1`: ilimitado.
-- `max_lines == 0`: rejeita qualquer PR.
+- `max_lines == 0`: ignora qualquer PR com alterações.
 
 ### Minimização de comentários
 
-Antes de cada revisão, chama GraphQL `minimizeComment` para recolher comentários históricos do Claude como `OUTDATED`. Se um comentário de revisão acabar com menos de 100 caracteres, ele é automaticamente minimizado e reexecutado uma vez. No modo multi-modelo, essa lógica roda no job `summarize`.
+Antes de cada revisão, chama GraphQL `minimizeComment` para recolher comentários históricos do Claude como `OUTDATED`. No modo de modelo único (e na composite action), isso roda no job de review; no modo multi-modelo, roda no job `summarize`.
 
 ### Instalação do Claude CLI
 
 - Runner tem o Claude CLI pré-instalado (caso típico de self-hosted): reutilizado diretamente.
-- Runner não tem (caso típico de `ubuntu-latest`): o `action.yml` primeiro tenta `npm install -g @anthropic-ai/claude-code`, depois cai para `curl -fsSL https://claude.ai/install.sh | bash` (npm não é afetado por bloqueio geográfico do Claude.ai, recomendado). O reusable workflow apenas detecta o PATH e não instala (depende da pré-instalação no runner self-hosted).
+- Runner não tem (caso típico de `ubuntu-latest`): tanto a composite action quanto o reusable workflow (jobs review e summarize) primeiro tentam `npm install -g @anthropic-ai/claude-code`, depois caem para `curl -fsSL https://claude.ai/install.sh | bash` (npm não é afetado por bloqueio geográfico do Claude.ai, recomendado).
 
 ### Formato de saída da revisão
 
@@ -197,6 +200,13 @@ O idioma do comentário é controlado por `review_language` (padrão inglês; va
 4. **(Apenas multi-modelo)** Blocos recolhidos no rodapé com a revisão original de cada modelo.
 
 Veja os padrões de `prompt` em `action.yml` / no arquivo de workflow para detalhes completos.
+
+### Artifacts
+
+Cada execução faz upload de artifacts para depuração (baixe-os na página de resumo da execução do workflow):
+
+- `claude-exec-log*` (composite action e reusable workflow): logs de execução do Claude, retidos por 3 dias.
+- `claude-review-*` (apenas multi-modelo): markdown da revisão bruta de cada modelo, retido por 7 dias; o job de sumarização os consome para construir o comentário mesclado.
 
 ## Validação local
 

@@ -10,7 +10,6 @@
 - PR 变更行数阈值(默认 10000);超过则自动跳过;支持手动重新运行以强制执行。
 - 每次运行前最小化历史 Claude 评论,降低 PR 噪声。
 - Claude CLI 自动检测 + 回退安装(在自托管 runner 上复用预装 CLI)。
-- 审查质量检查(评论过短时自动重试一次)。
 - 可参数化的审查语言(`review_language`,默认 English,回退到 English)+ 机器可解析的 `## TODO Fix List` 区块 + "Requires manual attention" 章节模板。
 
 ## 两种使用模式
@@ -53,7 +52,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
-          # 所有其他输入项均有默认值;按需覆盖
+          model: ${{ vars.CODE_REVIEW_MODEL }}   # 实际必填;留空会导致运行失败
+          # 其余输入项均有默认值;按需覆盖
 ```
 
 ### 模式 2:Reusable Workflow(推荐,支持多模型)
@@ -78,7 +78,10 @@ jobs:
        github.event.comment.user.type != 'Bot' &&
        contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit           # 让 CODE_REVIEW_API_KEY 透传过去
+    # 注意:`secrets: inherit` 只在同一组织/企业内透传 secrets。
+    # 跨组织调用方必须显式传入 API key,否则 ANTHROPIC_API_KEY 会为空。
+    secrets:
+      CODE_REVIEW_API_KEY: ${{ secrets.CODE_REVIEW_API_KEY }}
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
       # 单模型:将 `models` 留空以回退到 `model`
@@ -96,7 +99,7 @@ jobs:
 | `anthropic_api_key` | string | `""` | Anthropic API key(调用方必须显式传入,例如 `${{ secrets.CODE_REVIEW_API_KEY }}`) |
 | `anthropic_base_url` | string | `""` | Anthropic API base URL(调用方必须显式传入,例如 `${{ vars.CODE_REVIEW_BASE_URL }}`;通过网关代理时使用) |
 | `github_token` | string | `${{ github.token }}` | GitHub token;需要 `pull-requests: write`、`issues: write`、`actions: read` |
-| `model` | string | `""` | 单模型名称(调用方可传入 `${{ vars.CODE_REVIEW_MODEL }}` 或字面量;留空 = 使用 Claude CLI 默认模型) |
+| `model` | string | `""` | 单模型名称(实际必填:传入 `${{ vars.CODE_REVIEW_MODEL }}` 或字面量;留空会导致运行失败——不会静默回退到 Claude CLI 默认模型)。`[1m]` 后缀表示 1M token 上下文窗口变体,大 PR 建议使用 |
 | `max_lines` | number | `10000` | PR 变更行数上限;超过则跳过审查;`-1` 表示不限 |
 | `user_request` | string | `""` | 由 `@claude` 评论触发时的用户请求内容 |
 | `review_language` | string | `"English"` | 审查评论语言(例如 `English`、`Simplified Chinese`、`Traditional Chinese`、`Japanese`、`Korean`);留空或不支持的值回退到 English |
@@ -106,7 +109,7 @@ jobs:
 
 | 名称 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `runs_on` | string | `"self-hosted, Linux, fargate-runner"` | Runner 标签,逗号分隔或单个标签;应用于 setup/review/summarize 任务 |
+| `runs_on` | string | —(必填) | Runner 标签,逗号分隔或单个标签;应用于 setup/review/summarize 任务。无默认值——调用方必须显式传入 |
 | `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | 单模型名称(当 `models` 为空时使用) |
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | 逗号分隔的模型列表(≥2 启用多模型并行模式;最多 3 个,超出截断) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | 汇总模型名称(多模型模式下使用;留空时取 `models` 中的第一个) |
@@ -166,7 +169,7 @@ git push origin v1 --force
 setup 任务根据解析出的 `models` 数量决定模式:
 
 - `models` 解析为 ≥2 → `mode=multi`:矩阵并行审查;结果写入 `./claude-review-output.md`,打包为 artifact;`summarize` 任务下载所有 artifact,合并、去重、标注置信度,并发布一条汇总评论。
-- `models` 解析为 ≤1 → `mode=single`:单模型审查,直接发布 PR 评论,带质量检查和短结果重试。
+- `models` 解析为 ≤1 → `mode=single`:单模型审查,直接发布 PR 评论。
 
 > Composite action 始终为单模型模式,等价于 `mode=single`。
 
@@ -174,16 +177,16 @@ setup 任务根据解析出的 `models` 数量决定模式:
 
 - `max_lines > 0`:当 PR `additions + deletions` 超过此值时跳过审查;手动重新运行会跳过该阈值检查。
 - `max_lines == -1`:不限。
-- `max_lines == 0`:拒绝任何 PR。
+- `max_lines == 0`:跳过所有有变更的 PR。
 
 ### 评论最小化
 
-每次审查前,调用 GraphQL `minimizeComment` 将历史 Claude 评论折叠为 `OUTDATED`。若某条审查评论最终短于 100 字符,会自动最小化并重试一次。多模型模式下,该逻辑在 `summarize` 任务中执行。
+每次审查前,调用 GraphQL `minimizeComment` 将历史 Claude 评论折叠为 `OUTDATED`。单模型模式(含 composite action)在 review 任务中执行;多模型模式下在 `summarize` 任务中执行。
 
 ### Claude CLI 安装
 
 - Runner 已预装 Claude CLI(典型自托管场景):直接复用。
-- Runner 未预装(典型 `ubuntu-latest` 场景):`action.yml` 先尝试 `npm install -g @anthropic-ai/claude-code`,再回退到 `curl -fsSL https://claude.ai/install.sh | bash`(npm 不受 Claude.ai 地理封锁影响,推荐)。Reusable workflow 仅检测 PATH,不安装(依赖自托管 runner 预装)。
+- Runner 未预装(典型 `ubuntu-latest` 场景):composite action 与 reusable workflow(review 和 summarize 任务)都会先尝试 `npm install -g @anthropic-ai/claude-code`,再回退到 `curl -fsSL https://claude.ai/install.sh | bash`(npm 不受 Claude.ai 地理封锁影响,推荐)。
 
 ### 审查输出格式
 
@@ -197,6 +200,13 @@ setup 任务根据解析出的 `models` 数量决定模式:
 4. **(仅多模型)** 底部折叠区块展示每个模型的原始审查内容。
 
 完整细节见 `action.yml` / 工作流文件中的 `prompt` 默认值。
+
+### 运行产物(Artifacts)
+
+每次运行会上传 artifact 供调试(在工作流运行摘要页下载):
+
+- `claude-exec-log*`(composite action 与 reusable workflow):Claude 执行日志,保留 3 天。
+- `claude-review-*`(仅多模型):每个模型的原始审查 markdown,保留 7 天;`summarize` 任务消费它们生成合并评论。
 
 ## 本地校验
 
