@@ -342,7 +342,7 @@ runs:
 
     - name: Relocate execution log
       id: relocate_review_log
-      if: always()
+      if: failure()
       shell: bash
       run: |
         src="${{ steps.review_1.outputs.execution_file }}"
@@ -367,7 +367,7 @@ runs:
         echo "dst=$dst" >> $GITHUB_OUTPUT
 
     - name: Upload execution log
-      if: always()
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: claude-exec-log
