@@ -372,6 +372,6 @@ runs:
       with:
         name: claude-exec-log
         path: /tmp/claude-execution-output-*.json
-        retention-days: 3
+        retention-days: 1
         overwrite: true
         if-no-files-found: ignore
