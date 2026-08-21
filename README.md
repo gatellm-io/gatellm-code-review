@@ -101,6 +101,7 @@ jobs:
 | `github_token` | string | `${{ github.token }}` | GitHub token; needs `pull-requests: write`, `issues: write`, `actions: read` |
 | `model` | string | `""` | Single model name (REQUIRED in practice: pass `${{ vars.CODE_REVIEW_MODEL }}` or a literal; empty fails the run — no silent fallback to the CLI default model). The `[1m]` suffix denotes the 1M-token context-window variant, recommended for large PRs |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
+| `max_context_tokens` | number | `1000000` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var takes precedence over this input |
 | `user_request` | string | `""` | User request content when triggered by `@claude` comment |
 | `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
 | `prompt` | string | (see `action.yml`) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
@@ -114,6 +115,7 @@ jobs:
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | Comma-separated model list (≥2 enables multi-model parallel mode; max 3, extras truncated) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | Summary model name (used in multi-model mode; empty takes the first of `models`) |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
+| `max_context_tokens` | number | `1000000` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var takes precedence over this input |
 | `user_request` | string | `""` | User request content when triggered by `@claude` comment |
 | `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
 | `prompt` | string | (see workflow file) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
@@ -187,6 +189,15 @@ Before each review, calls GraphQL `minimizeComment` to fold historical Claude co
 
 - Runner has Claude CLI preinstalled (typical self-hosted case): reused directly.
 - Runner doesn't (typical `ubuntu-latest` case): both the composite action and the reusable workflow (review and summarize jobs) first try `npm install -g @anthropic-ai/claude-code`, then fall back to `curl -fsSL https://claude.ai/install.sh | bash` (npm isn't affected by Claude.ai geo-block, recommended).
+
+### Max context tokens
+
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` controls Claude Code's context-window size during the review. Resolution order:
+
+1. A runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` environment variable (e.g. exported by the self-hosted runner, or set in the caller job's `env`) takes precedence.
+2. Otherwise the `max_context_tokens` input is used, defaulting to `1000000`.
+
+The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step.
 
 ### Review output format
 
