@@ -37,7 +37,7 @@ jobs:
 
       # — Common params (all have defaults; override as needed) —
       # max_lines: 10000
-      # max_context_tokens: 1000000   # CLAUDE_CODE_MAX_CONTEXT_TOKENS; a runner-provided env var of the same name takes precedence
+      # max_context_tokens: 1000000   # Explicit value overrides the runner env; empty falls back to runner env, then 1000000
       # user_request: ""
       # review_language: "English"   # Default English; empty/unsupported value falls back to English; pass "Simplified Chinese" for Chinese
       # prompt: |
