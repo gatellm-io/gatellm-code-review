@@ -89,6 +89,30 @@ def assert_header(path, start, input_name, step_name):
         )
 
 
+def assert_input_declared(path, input_name):
+    """Assert the input is declared in the file's `inputs:` section.
+
+    A step that references `${{ inputs.<name> }}` still resolves to an empty
+    string when the declaration is dropped, so the header and identity checks
+    alone would leave every case green while the input silently stops working.
+    The section is located by its key rather than a fixed line number.
+    """
+    lines = open(path, encoding="utf-8").read().splitlines()
+    start = next((i for i, l in enumerate(lines) if l.strip() == "inputs:"), None)
+    if start is None:
+        raise SystemExit(f"FAIL: {path}: no 'inputs:' section found")
+    inputs_indent = len(lines[start]) - len(lines[start].lstrip())
+    for line in lines[start + 1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= inputs_indent:
+            break  # end of the inputs section
+        if line.strip().split(":")[0] == input_name:
+            print(f"OK: {path}: '{input_name}' is declared under 'inputs:'")
+            return
+    raise SystemExit(
+        f"FAIL: {path}: input '{input_name}' is not declared under 'inputs:'"
+    )
+
+
 def assert_position(path, step_name, workflow_src=False):
     """Assert the resolution step precedes the CLI detect/install steps.
 
@@ -174,6 +198,8 @@ def assert_output_wiring(path, env_var, expected):
 
 for input_name, step_name, env_var, default in SETTINGS:
     print(f"== {input_name} ({env_var}, default {default}) ==")
+    assert_input_declared(action, input_name)
+    assert_input_declared(workflow, input_name)
     assert_position(action, step_name)
     assert_position(workflow, step_name, workflow_src=True)
     assert_output_wiring(action, env_var, expected=1)
