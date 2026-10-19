@@ -102,6 +102,7 @@ jobs:
 | `model` | string | `""` | Single model name (REQUIRED in practice: pass `${{ vars.CODE_REVIEW_MODEL }}` or a literal; empty fails the run — no silent fallback to the CLI default model). The `[1m]` suffix denotes the 1M-token context-window variant, recommended for large PRs |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
 | `max_context_tokens` | string | `""` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit value other than the literal `0` overrides everything, but a non-zero value that is not a positive integer fails the job; omitting it (the default), passing the literal `0`, or passing whitespace-only is treated as unset and falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` (this input is forwarded as a string by the composite action; other zero spellings such as `00`, `0.0` or `+0` are **not** treated as unset and fail the job as non-positive-integer input) |
+| `max_output_tokens` | string | `""` | Max output tokens for Claude Code, exported as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Same resolution and validation rules as `max_context_tokens`: an explicit non-zero value wins, otherwise a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS` env var applies, otherwise `64000` |
 | `user_request` | string | `""` | User request content when triggered by `@claude` comment |
 | `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
 | `prompt` | string | (see `action.yml`) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
@@ -116,6 +117,7 @@ jobs:
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | Summary model name (used in multi-model mode; empty takes the first of `models`) |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
 | `max_context_tokens` | number | `0` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit non-zero value overrides everything, but a non-integer value fails the job; `0` (the default) falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` |
+| `max_output_tokens` | number | `0` | Max output tokens for Claude Code, exported as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Same rules as `max_context_tokens`: an explicit non-zero value wins, otherwise a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS` env var applies, otherwise `64000` |
 | `user_request` | string | `""` | User request content when triggered by `@claude` comment |
 | `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
 | `prompt` | string | (see workflow file) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
@@ -207,7 +209,19 @@ Validation differs by source (both sources are trimmed of surrounding whitespace
 
 **Upgrade note:** an explicit `max_context_tokens` always wins over the runner value. If a caller sets the input only to mirror an old default and expects a larger runner-provided value to apply, it must omit the input or pass `0` after upgrading (either form means unset in both entry points).
 
-The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step. A regression test (`tests/resolve-max-context-tokens.sh`) asserts the three copies of the resolution logic stay identical and exercises the table above; it runs in the `Tests` workflow.
+The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step. A regression test (`tests/resolve-token-limits.sh`) asserts that all copies of the resolution logic (three per token setting, for `max_context_tokens` and `max_output_tokens`) stay identical and exercises the precedence/validation table above for both settings; it runs in the `Tests` workflow.
+
+### Max output tokens
+
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS` controls the maximum number of tokens Claude Code may emit per response during the review. Resolution order and validation are identical to `max_context_tokens`, with a different built-in default:
+
+1. An explicit `max_output_tokens` input (non-zero) wins — callers can always override the runner.
+2. Otherwise a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS` environment variable is used (same visibility rules as above: the reusable workflow does not inherit the caller's `env`).
+3. Otherwise the built-in default `64000` applies.
+
+An explicit non-empty non-zero input that is not a positive integer fails the job (`::error::`); an invalid runner-provided value emits `::warning::` and falls back to `64000`. The same regression test exercises both settings.
+
+**Default and model output caps:** when neither an input nor a runner-provided value is present, the built-in default `64000` is exported to every run. The supported cap depends on the specific model, not on its generation: newer Sonnet/Opus releases support 64k, while older models such as Opus 4 and 4.1 cap at 32k, and third-party gateways reached through a custom `anthropic_base_url` may enforce a lower limit; an over-limit value is either clamped or rejected, and in multi-model mode it is applied to every model in the matrix (a rejection drops that model's review). If you run such a model or gateway, set `max_output_tokens` (or a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS`) to a value within its output cap. Note that the output budget is carved out of the context window, so reserving a large output budget reduces input headroom on 200k-context models; pair a large `max_output_tokens` with a matching `max_context_tokens` (and consider the `[1m]` model variant) for large PRs.
 
 ### Review output format
 
@@ -236,8 +250,9 @@ Each run uploads artifacts for debugging (download from the workflow run's summa
 ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f, aliases: true) }' \
   action.yml .github/workflows/claude-auto-review.yml .github/workflows/tests.yml
 
-# max_context_tokens resolution regression test (also runs in the Tests workflow)
-bash tests/resolve-max-context-tokens.sh
+# token-limit resolution regression test (max_context_tokens + max_output_tokens;
+# also runs in the Tests workflow)
+bash tests/resolve-token-limits.sh
 
 # actionlint (if installed)
 actionlint
