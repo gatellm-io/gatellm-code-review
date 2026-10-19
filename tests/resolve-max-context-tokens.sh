@@ -76,6 +76,11 @@ def assert_position(path, job_headers=None):
     sections = []
     if job_headers:
         starts = [i for i, line in enumerate(lines) if line in job_headers]
+        if len(starts) != len(job_headers):
+            raise SystemExit(
+                f"FAIL: {path}: expected {len(job_headers)} job header(s) "
+                f"{sorted(job_headers)}, found {len(starts)}"
+            )
         for idx, start in enumerate(starts):
             end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
             sections.append((lines[start].strip(), start, end))
@@ -166,8 +171,9 @@ assert_case() {
   : > "$envfile"
 
   local status=0
+  # Mirror the runner's `shell: bash` invocation: --noprofile --norc -eo pipefail.
   INPUT_TOKENS="$input" CLAUDE_CODE_MAX_CONTEXT_TOKENS="$runner" GITHUB_ENV="$envfile" \
-    "$BASH_BIN" "$script" >"$log" 2>&1 || status=$?
+    "$BASH_BIN" -eo pipefail "$script" >"$log" 2>&1 || status=$?
 
   if [ "$status" -ne "$expected_status" ]; then
     echo "FAIL [$name]: expected exit $expected_status, got $status"
