@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-max-context-tokens:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Validate workflow YAML
+        run: |
+          ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f, aliases: true) }' \
+            action.yml \
+            .github/workflows/claude-auto-review.yml \
+            .github/workflows/tests.yml
+
+      - name: Run max_context_tokens resolution tests
+        env:
+          # Passed via env, not interpolated into the script body.
+          OS: ${{ matrix.os }}
+        run: |
+          # Production runs `shell: bash`, which resolves to /bin/bash 3.2 on
+          # the self-hosted macOS runners. GitHub-hosted macos-latest ships the
+          # same /bin/bash, so it is a conservative stand-in for that shell.
+          # BASH_BIN is exported so the test reuses it for the extracted block.
+          if [ "$OS" = "macos-latest" ]; then
+            export BASH_BIN=/bin/bash
+          else
+            export BASH_BIN=bash
+          fi
+          "$BASH_BIN" tests/resolve-max-context-tokens.sh
