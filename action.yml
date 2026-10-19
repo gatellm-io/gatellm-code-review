@@ -26,7 +26,7 @@ inputs:
     required: false
     default: 10000
   max_context_tokens:
-    description: "Max context tokens for Claude Code, exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. An explicit non-zero value overrides everything. Empty (default) falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var, then to 1000000."
+    description: "Max context tokens for Claude Code, exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. An explicit non-zero value overrides everything. Empty (the default) falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var, then to 1000000."
     required: false
     default: ""
   user_request:
