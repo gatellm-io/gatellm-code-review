@@ -26,7 +26,7 @@ inputs:
     required: false
     default: 10000
   max_context_tokens:
-    description: "Max context tokens for Claude Code (string input), exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. An explicit non-zero value overrides everything. Empty (the default) falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var (trimmed; 0 means unset; invalid values warn and fall back to 1000000), then to 1000000."
+    description: "Max context tokens for Claude Code (string input), exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. Surrounding whitespace is trimmed. An explicit non-empty, non-zero value overrides everything (invalid values fail the job). Empty or 0 (the default) falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var (0 means unset; invalid values warn and fall back to 1000000), then to 1000000."
     required: false
     default: ""
   user_request:
