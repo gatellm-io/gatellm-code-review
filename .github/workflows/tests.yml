@@ -28,7 +28,7 @@ jobs:
             .github/workflows/claude-auto-review.yml \
             .github/workflows/tests.yml
 
-      - name: Run max_context_tokens resolution tests
+      - name: Run token-limit resolution tests
         env:
           # Passed via env, not interpolated into the script body.
           OS: ${{ matrix.os }}

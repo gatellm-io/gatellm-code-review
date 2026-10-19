@@ -38,6 +38,7 @@ jobs:
       # — Common params (all have defaults; override as needed) —
       # max_lines: 10000
       # max_context_tokens: 1000000   # Explicit non-zero value overrides the runner env; omit or pass 0 to fall back to runner env, then 1000000
+      # max_output_tokens: 64000      # Explicit non-zero value overrides the runner env; omit or pass 0 to fall back to runner env, then 64000
       # user_request: ""
       # review_language: "English"   # Default English; empty/unsupported value falls back to English; pass "Simplified Chinese" for Chinese
       # prompt: |

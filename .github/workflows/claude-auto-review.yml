@@ -32,6 +32,11 @@ on:
         required: false
         type: number
         default: 0
+      max_output_tokens:
+        description: "Max output tokens for Claude Code, exported as CLAUDE_CODE_MAX_OUTPUT_TOKENS. An explicit non-zero value overrides everything (invalid values fail the job). 0 (the default) falls back to a runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS env var (surrounding whitespace trimmed; 0 means unset; invalid values warn and fall back to 64000), then to 64000."
+        required: false
+        type: number
+        default: 0
       user_request:
         description: "User request content when triggered by @claude comment (optional)"
         required: false
@@ -264,6 +269,56 @@ jobs:
           fi
           echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS}" >> "$GITHUB_ENV"
 
+      - name: Resolve max output tokens
+        shell: bash
+        env:
+          # Passed via env, never interpolated into the script (command-injection guard).
+          INPUT_TOKENS: ${{ inputs.max_output_tokens }}
+        run: |
+          # Resolution order:
+          #   1. explicit caller input (non-empty, and not the literal "0") — wins over the runner env
+          #   2. runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable
+          #   3. built-in default 64000
+          # A runner-provided value is a hint, not a contract: trim it, treat the literal "0" as
+          # unset, and fall back to the default with a warning when it is not a positive integer,
+          # so a misconfigured runner env degrades instead of failing the whole job.
+          trim() {
+            local v="$1"
+            v="${v#"${v%%[![:space:]]*}"}"
+            v="${v%"${v##*[![:space:]]}"}"
+            printf '%s' "$v"
+          }
+          # Strip CR/LF before echoing a raw value into a workflow command, so an embedded
+          # newline cannot inject an extra ::command:: line into the log.
+          sanitize() {
+            local v="$1"
+            v="${v//$'\r'/ }"
+            v="${v//$'\n'/ }"
+            printf '%s' "$v"
+          }
+          INPUT_TOKENS="$(trim "$INPUT_TOKENS")"
+          if [ -n "$INPUT_TOKENS" ] && [ "$INPUT_TOKENS" != "0" ]; then
+            echo "Using caller-provided max_output_tokens input: $(sanitize "$INPUT_TOKENS")"
+            CLAUDE_CODE_MAX_OUTPUT_TOKENS="$INPUT_TOKENS"
+            if ! [[ "$CLAUDE_CODE_MAX_OUTPUT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid max_output_tokens input '$(sanitize "$CLAUDE_CODE_MAX_OUTPUT_TOKENS")': must be a positive integer"
+              exit 1
+            fi
+          else
+            RUNNER_TOKENS="$(trim "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}")"
+            if [ -z "$RUNNER_TOKENS" ] || [ "$RUNNER_TOKENS" = "0" ]; then
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
+              echo "Using default CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${CLAUDE_CODE_MAX_OUTPUT_TOKENS}"
+            elif [[ "$RUNNER_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS="$RUNNER_TOKENS"
+              echo "Using runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${CLAUDE_CODE_MAX_OUTPUT_TOKENS}"
+            else
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
+              echo "::warning::Ignoring invalid runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS '$(sanitize "$RUNNER_TOKENS")': must be a positive integer; falling back to ${CLAUDE_CODE_MAX_OUTPUT_TOKENS}"
+            fi
+          fi
+          echo "CLAUDE_CODE_MAX_OUTPUT_TOKENS=${CLAUDE_CODE_MAX_OUTPUT_TOKENS}" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -408,6 +463,7 @@ jobs:
         continue-on-error: ${{ needs.setup.outputs.mode == 'multi' }}
         env:
           CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${{ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS }}
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${{ env.CLAUDE_CODE_MAX_OUTPUT_TOKENS }}
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
@@ -565,6 +621,56 @@ jobs:
             fi
           fi
           echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS}" >> "$GITHUB_ENV"
+
+      - name: Resolve max output tokens
+        shell: bash
+        env:
+          # Passed via env, never interpolated into the script (command-injection guard).
+          INPUT_TOKENS: ${{ inputs.max_output_tokens }}
+        run: |
+          # Resolution order:
+          #   1. explicit caller input (non-empty, and not the literal "0") — wins over the runner env
+          #   2. runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable
+          #   3. built-in default 64000
+          # A runner-provided value is a hint, not a contract: trim it, treat the literal "0" as
+          # unset, and fall back to the default with a warning when it is not a positive integer,
+          # so a misconfigured runner env degrades instead of failing the whole job.
+          trim() {
+            local v="$1"
+            v="${v#"${v%%[![:space:]]*}"}"
+            v="${v%"${v##*[![:space:]]}"}"
+            printf '%s' "$v"
+          }
+          # Strip CR/LF before echoing a raw value into a workflow command, so an embedded
+          # newline cannot inject an extra ::command:: line into the log.
+          sanitize() {
+            local v="$1"
+            v="${v//$'\r'/ }"
+            v="${v//$'\n'/ }"
+            printf '%s' "$v"
+          }
+          INPUT_TOKENS="$(trim "$INPUT_TOKENS")"
+          if [ -n "$INPUT_TOKENS" ] && [ "$INPUT_TOKENS" != "0" ]; then
+            echo "Using caller-provided max_output_tokens input: $(sanitize "$INPUT_TOKENS")"
+            CLAUDE_CODE_MAX_OUTPUT_TOKENS="$INPUT_TOKENS"
+            if ! [[ "$CLAUDE_CODE_MAX_OUTPUT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid max_output_tokens input '$(sanitize "$CLAUDE_CODE_MAX_OUTPUT_TOKENS")': must be a positive integer"
+              exit 1
+            fi
+          else
+            RUNNER_TOKENS="$(trim "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}")"
+            if [ -z "$RUNNER_TOKENS" ] || [ "$RUNNER_TOKENS" = "0" ]; then
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
+              echo "Using default CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${CLAUDE_CODE_MAX_OUTPUT_TOKENS}"
+            elif [[ "$RUNNER_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS="$RUNNER_TOKENS"
+              echo "Using runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${CLAUDE_CODE_MAX_OUTPUT_TOKENS}"
+            else
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
+              echo "::warning::Ignoring invalid runner-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS '$(sanitize "$RUNNER_TOKENS")': must be a positive integer; falling back to ${CLAUDE_CODE_MAX_OUTPUT_TOKENS}"
+            fi
+          fi
+          echo "CLAUDE_CODE_MAX_OUTPUT_TOKENS=${CLAUDE_CODE_MAX_OUTPUT_TOKENS}" >> "$GITHUB_ENV"
 
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -730,6 +836,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         env:
           CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${{ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS }}
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${{ env.CLAUDE_CODE_MAX_OUTPUT_TOKENS }}
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
