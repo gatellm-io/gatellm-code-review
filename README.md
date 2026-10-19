@@ -101,7 +101,7 @@ jobs:
 | `github_token` | string | `${{ github.token }}` | GitHub token; needs `pull-requests: write`, `issues: write`, `actions: read` |
 | `model` | string | `""` | Single model name (REQUIRED in practice: pass `${{ vars.CODE_REVIEW_MODEL }}` or a literal; empty fails the run — no silent fallback to the CLI default model). The `[1m]` suffix denotes the 1M-token context-window variant, recommended for large PRs |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
-| `max_context_tokens` | string | `""` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit non-zero value overrides everything, but a non-zero value that is not a positive integer fails the job; omitting it (the default), passing `0`, or passing whitespace-only is treated as unset and falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` (this input is forwarded as a string by the composite action) |
+| `max_context_tokens` | string | `""` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit value other than the literal `0` overrides everything, but a non-zero value that is not a positive integer fails the job; omitting it (the default), passing the literal `0`, or passing whitespace-only is treated as unset and falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` (this input is forwarded as a string by the composite action; other zero spellings such as `00`, `0.0` or `+0` are **not** treated as unset and fail the job as non-positive-integer input) |
 | `user_request` | string | `""` | User request content when triggered by `@claude` comment |
 | `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
 | `prompt` | string | (see `action.yml`) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
@@ -198,7 +198,7 @@ Before each review, calls GraphQL `minimizeComment` to fold historical Claude co
 2. Otherwise a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` environment variable is used. For the composite action this includes an `env:` set on the caller job; a reusable workflow does not inherit the caller's `env`, so there only the runner process environment (and the workflow's own job/step `env`) applies.
 3. Otherwise the built-in default `1000000` applies.
 
-"Unset" is spelled differently per entry point: the composite action input is a string and defaults to `""`; the reusable workflow input is a `number` and defaults to `0` (an empty value is not representable there). Both entry points treat `0` as unset.
+"Unset" is spelled differently per entry point: the composite action input is a string and defaults to `""`; the reusable workflow input is a `number` and defaults to `0` (an empty value is not representable there). Both entry points treat the literal `0` as unset; for the composite action this is a string comparison after trimming, so alternative zero spellings (`00`, `0.0`, `+0`) are not recognized as unset and fail the job as non-positive-integer input.
 
 Validation differs by source (both sources are trimmed of surrounding whitespace first, so `" 0 "` is treated as unset and `" 2000000 "` as `2000000`):
 

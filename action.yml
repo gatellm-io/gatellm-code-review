@@ -26,7 +26,7 @@ inputs:
     required: false
     default: 10000
   max_context_tokens:
-    description: "Max context tokens for Claude Code (string input), exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. Surrounding whitespace is trimmed. An explicit non-empty, non-zero value overrides everything (invalid values fail the job). Empty (the default) or 0 falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var (0 means unset; invalid values warn and fall back to 1000000), then to 1000000."
+    description: "Max context tokens for Claude Code (string input), exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. Surrounding whitespace is trimmed. An explicit value other than the literal \"0\" overrides everything (invalid values fail the job; other zero spellings such as \"00\", \"0.0\" or \"+0\" are not treated as unset and fail as non-positive-integer input). Empty (the default) or the literal \"0\" falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var (literal \"0\" means unset; invalid values warn and fall back to 1000000), then to 1000000."
     required: false
     default: ""
   user_request:
@@ -311,11 +311,11 @@ runs:
         INPUT_TOKENS: ${{ inputs.max_context_tokens }}
       run: |
         # Resolution order:
-        #   1. explicit caller input (non-empty, non-zero) — wins over the runner env
+        #   1. explicit caller input (non-empty, and not the literal "0") — wins over the runner env
         #   2. runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable
         #   3. built-in default 1000000
-        # A runner-provided value is a hint, not a contract: trim it, treat "0" as unset,
-        # and fall back to the default with a warning when it is not a positive integer,
+        # A runner-provided value is a hint, not a contract: trim it, treat the literal "0" as
+        # unset, and fall back to the default with a warning when it is not a positive integer,
         # so a misconfigured runner env degrades instead of failing the whole job.
         trim() {
           local v="$1"
