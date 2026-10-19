@@ -28,10 +28,10 @@ on:
         type: number
         default: 10000
       max_context_tokens:
-        description: "Max context tokens for Claude Code, exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. Default 1000000. A runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable takes precedence over this input."
+        description: "Max context tokens for Claude Code, exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. An explicit non-zero value overrides everything (invalid values fail the job). 0 (the default) falls back to a runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS env var (surrounding whitespace trimmed; 0 means unset; invalid values warn and fall back to 1000000), then to 1000000."
         required: false
         type: number
-        default: 1000000
+        default: 0
       user_request:
         description: "User request content when triggered by @claude comment (optional)"
         required: false
@@ -354,13 +354,43 @@ jobs:
 
       - name: Resolve max context tokens
         shell: bash
+        env:
+          # Passed via env, never interpolated into the script (command-injection guard).
+          INPUT_TOKENS: ${{ inputs.max_context_tokens }}
         run: |
-          # Default to the input value (1000000); a runner-provided
-          # CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable takes precedence.
-          if [ -n "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}" ]; then
-            echo "Using runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+          # Resolution order:
+          #   1. explicit caller input (non-zero) — wins over the runner env
+          #   2. runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable
+          #   3. built-in default 1000000
+          # A runner-provided value is a hint, not a contract: trim it, treat "0" as unset,
+          # and fall back to the default with a warning when it is not a positive integer,
+          # so a misconfigured runner env degrades instead of failing the whole job.
+          trim() {
+            local v="$1"
+            v="${v#"${v%%[![:space:]]*}"}"
+            v="${v%"${v##*[![:space:]]}"}"
+            printf '%s' "$v"
+          }
+          INPUT_TOKENS="$(trim "$INPUT_TOKENS")"
+          if [ -n "$INPUT_TOKENS" ] && [ "$INPUT_TOKENS" != "0" ]; then
+            echo "Using caller-provided max_context_tokens input: ${INPUT_TOKENS}"
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS="$INPUT_TOKENS"
+            if ! [[ "$CLAUDE_CODE_MAX_CONTEXT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid max_context_tokens input '${CLAUDE_CODE_MAX_CONTEXT_TOKENS}': must be a positive integer"
+              exit 1
+            fi
           else
-            CLAUDE_CODE_MAX_CONTEXT_TOKENS="${{ inputs.max_context_tokens }}"
+            RUNNER_TOKENS="$(trim "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}")"
+            if [ -z "$RUNNER_TOKENS" ] || [ "$RUNNER_TOKENS" = "0" ]; then
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+              echo "Using default CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+            elif [[ "$RUNNER_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS="$RUNNER_TOKENS"
+              echo "Using runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+            else
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+              echo "::warning::Ignoring invalid runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS '${RUNNER_TOKENS}': must be a positive integer; falling back to ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+            fi
           fi
           echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS}" >> $GITHUB_ENV
 
@@ -639,13 +669,43 @@ jobs:
 
       - name: Resolve max context tokens
         shell: bash
+        env:
+          # Passed via env, never interpolated into the script (command-injection guard).
+          INPUT_TOKENS: ${{ inputs.max_context_tokens }}
         run: |
-          # Default to the input value (1000000); a runner-provided
-          # CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable takes precedence.
-          if [ -n "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}" ]; then
-            echo "Using runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+          # Resolution order:
+          #   1. explicit caller input (non-zero) — wins over the runner env
+          #   2. runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable
+          #   3. built-in default 1000000
+          # A runner-provided value is a hint, not a contract: trim it, treat "0" as unset,
+          # and fall back to the default with a warning when it is not a positive integer,
+          # so a misconfigured runner env degrades instead of failing the whole job.
+          trim() {
+            local v="$1"
+            v="${v#"${v%%[![:space:]]*}"}"
+            v="${v%"${v##*[![:space:]]}"}"
+            printf '%s' "$v"
+          }
+          INPUT_TOKENS="$(trim "$INPUT_TOKENS")"
+          if [ -n "$INPUT_TOKENS" ] && [ "$INPUT_TOKENS" != "0" ]; then
+            echo "Using caller-provided max_context_tokens input: ${INPUT_TOKENS}"
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS="$INPUT_TOKENS"
+            if ! [[ "$CLAUDE_CODE_MAX_CONTEXT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid max_context_tokens input '${CLAUDE_CODE_MAX_CONTEXT_TOKENS}': must be a positive integer"
+              exit 1
+            fi
           else
-            CLAUDE_CODE_MAX_CONTEXT_TOKENS="${{ inputs.max_context_tokens }}"
+            RUNNER_TOKENS="$(trim "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}")"
+            if [ -z "$RUNNER_TOKENS" ] || [ "$RUNNER_TOKENS" = "0" ]; then
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+              echo "Using default CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+            elif [[ "$RUNNER_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS="$RUNNER_TOKENS"
+              echo "Using runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+            else
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+              echo "::warning::Ignoring invalid runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS '${RUNNER_TOKENS}': must be a positive integer; falling back to ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+            fi
           fi
           echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS}" >> $GITHUB_ENV
 
