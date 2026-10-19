@@ -209,7 +209,7 @@ Validation differs by source (both sources are trimmed of surrounding whitespace
 
 **Upgrade note:** an explicit `max_context_tokens` always wins over the runner value. If a caller sets the input only to mirror an old default and expects a larger runner-provided value to apply, it must omit the input or pass `0` after upgrading (either form means unset in both entry points).
 
-The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step. A regression test (`tests/resolve-max-context-tokens.sh`) asserts the three copies of the resolution logic stay identical and exercises the table above; it runs in the `Tests` workflow.
+The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step. A regression test (`tests/resolve-token-limits.sh`) asserts that all copies of the resolution logic (three per token setting, for `max_context_tokens` and `max_output_tokens`) stay identical and exercises the precedence/validation table above for both settings; it runs in the `Tests` workflow.
 
 ### Max output tokens
 
@@ -220,6 +220,8 @@ The composite action and reusable workflow both resolve this into the `env` of t
 3. Otherwise the built-in default `64000` applies.
 
 An explicit non-empty non-zero input that is not a positive integer fails the job (`::error::`); an invalid runner-provided value emits `::warning::` and falls back to `64000`. The same regression test exercises both settings.
+
+**Default and model output caps:** when neither an input nor a runner-provided value is present, the built-in default `64000` is exported to every run. Claude 4.x models support this cap, but older models (e.g. Opus 4/4.1, which cap at 32k) and third-party gateways reached through a custom `anthropic_base_url` may enforce a lower output limit; an over-limit value is either clamped or rejected, and in multi-model mode it is applied to every model in the matrix (a rejection drops that model's review). If you run such a model or gateway, set `max_output_tokens` (or a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS`) to a value within its output cap. Note that the output budget is carved out of the context window, so reserving a large output budget reduces input headroom on 200k-context models; pair a large `max_output_tokens` with a matching `max_context_tokens` (and consider the `[1m]` model variant) for large PRs.
 
 ### Review output format
 
@@ -248,8 +250,9 @@ Each run uploads artifacts for debugging (download from the workflow run's summa
 ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f, aliases: true) }' \
   action.yml .github/workflows/claude-auto-review.yml .github/workflows/tests.yml
 
-# max_context_tokens resolution regression test (also runs in the Tests workflow)
-bash tests/resolve-max-context-tokens.sh
+# token-limit resolution regression test (max_context_tokens + max_output_tokens;
+# also runs in the Tests workflow)
+bash tests/resolve-token-limits.sh
 
 # actionlint (if installed)
 actionlint

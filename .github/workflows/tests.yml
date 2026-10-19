@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  resolve-max-context-tokens:
+  resolve-token-limits:
     strategy:
       fail-fast: false
       matrix:
@@ -42,4 +42,4 @@ jobs:
           else
             export BASH_BIN=bash
           fi
-          "$BASH_BIN" tests/resolve-max-context-tokens.sh
+          "$BASH_BIN" tests/resolve-token-limits.sh
