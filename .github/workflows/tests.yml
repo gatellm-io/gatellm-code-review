@@ -22,4 +22,12 @@ jobs:
           fetch-depth: 1
 
       - name: Run max_context_tokens resolution tests
-        run: bash tests/resolve-max-context-tokens.sh
+        run: |
+          # Exercise the exact shell the action sees on macOS self-hosted
+          # runners (`shell: bash` -> /bin/bash 3.2), not Homebrew's bash.
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            BASH_BIN=/bin/bash
+          else
+            BASH_BIN=bash
+          fi
+          "$BASH_BIN" tests/resolve-max-context-tokens.sh

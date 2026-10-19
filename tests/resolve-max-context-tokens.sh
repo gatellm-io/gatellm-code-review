@@ -16,6 +16,11 @@ PY="${PYTHON:-python3}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+# Reuse the interpreter that started this script, so a macOS run genuinely
+# exercises /bin/bash 3.2 rather than whatever `bash` resolves to on PATH.
+BASH_BIN="${BASH:-bash}"
+echo "bash: $BASH_VERSION ($BASH_BIN)"
+
 "$PY" - "$ACTION" "$WORKFLOW" "$tmpdir" <<'PY'
 import sys
 
@@ -35,6 +40,21 @@ def extract_all(path):
             )
         except StopIteration:
             raise SystemExit(f"{path}: step {STEP!r} has no 'run: |' block")
+        # The run body alone is not enough: a typo in the env wiring would leave
+        # every test green while that job silently ignores the caller input.
+        header = lines[start:run_idx]
+        if not any(l.strip() == "INPUT_TOKENS: ${{ inputs.max_context_tokens }}" for l in header):
+            raise SystemExit(
+                f"FAIL: {path}: resolve step at line {start + 1} is missing "
+                "'INPUT_TOKENS: ${{ inputs.max_context_tokens }}'"
+            )
+        if path.endswith("action.yml") and not any(
+            l.strip() == "if: steps.check.outputs.too_large != 'true'" for l in header
+        ):
+            raise SystemExit(
+                f"FAIL: {path}: resolve step at line {start + 1} lost its "
+                "'too_large' guard"
+            )
         step_indent = len(line) - len(line.lstrip())
         body_indent = len(lines[run_idx]) - len(lines[run_idx].lstrip()) + 2
         body = []
@@ -71,7 +91,10 @@ def assert_position(path, job_headers=None):
 
         resolve_idx = find(STEP)
         if resolve_idx is None:
-            continue  # e.g. the setup job does not resolve context tokens
+            raise SystemExit(
+                f"FAIL: {path} [{name}]: no '{STEP}' step; every job that runs "
+                "the CLI must resolve the context window"
+            )
         detect_idx = find("- name: Detect Claude CLI path")
         install_idx = find("- name: Install Claude CLI if missing")
         if detect_idx is None or install_idx is None:
@@ -126,7 +149,7 @@ assert_case() {
 
   local status=0
   INPUT_TOKENS="$input" CLAUDE_CODE_MAX_CONTEXT_TOKENS="$runner" GITHUB_ENV="$envfile" \
-    bash "$script" >"$log" 2>&1 || status=$?
+    "$BASH_BIN" "$script" >"$log" 2>&1 || status=$?
 
   if [ "$status" -ne "$expected_status" ]; then
     echo "FAIL [$name]: expected exit $expected_status, got $status"
@@ -180,9 +203,16 @@ assert_case "invalid explicit 0 spelling fails"  "00"      ""        1
 # Error messages must not emit a second workflow-command line when the value
 # contains an embedded newline.
 newline_input=$'123\n::add-mask::pwned'
-assert_case "newline injection is sanitized" "$newline_input" "" 1
+assert_case "error path newline injection is sanitized" "$newline_input" "" 1
 if grep -q '^::add-mask::pwned' "$tmpdir/log"; then
-  echo "FAIL [newline injection is sanitized]: raw newline reached the log"
+  echo "FAIL [error path newline injection is sanitized]: raw newline reached the log"
+  failures=$((failures + 1))
+fi
+
+# The runner-env branch uses the same sanitizer for its ::warning:: message.
+assert_case "warning path newline injection is sanitized" "" $'1M\n::add-mask::pwned' 0 "1000000" "::warning::"
+if grep -q '^::add-mask::pwned' "$tmpdir/log"; then
+  echo "FAIL [warning path newline injection is sanitized]: raw newline reached the log"
   failures=$((failures + 1))
 fi
 

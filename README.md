@@ -205,7 +205,7 @@ Validation differs by source (both sources are trimmed of surrounding whitespace
 - An explicit, non-empty, non-zero `max_context_tokens` input that is not a positive integer fails the job early (`::error::`) — caller mistakes are loud.
 - A runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var is treated as a hint: `0` means unset, and any other non-positive-integer value (e.g. `1M`) emits a `::warning::` and falls back to `1000000`, so a misconfigured runner degrades instead of breaking the whole pipeline.
 
-**Upgrade note:** an explicit `max_context_tokens` always wins over the runner value. If a caller sets the input only to mirror an old default and expects a larger runner-provided value to apply, it must omit the input (composite action) or pass `0` (reusable workflow) after upgrading.
+**Upgrade note:** an explicit `max_context_tokens` always wins over the runner value. If a caller sets the input only to mirror an old default and expects a larger runner-provided value to apply, it must omit the input or pass `0` after upgrading (either form means unset in both entry points).
 
 The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step. A regression test (`tests/resolve-max-context-tokens.sh`) asserts the three copies of the resolution logic stay identical and exercises the table above; it runs in the `Tests` workflow.
 
