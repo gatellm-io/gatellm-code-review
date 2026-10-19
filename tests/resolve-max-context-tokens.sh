@@ -22,6 +22,7 @@ BASH_BIN="${BASH_BIN:-${BASH:-bash}}"
 echo "bash: $BASH_VERSION ($BASH_BIN)"
 
 "$PY" - "$ACTION" "$WORKFLOW" "$tmpdir" <<'PY'
+import re
 import sys
 
 action, workflow, out = sys.argv[1:4]
@@ -66,26 +67,23 @@ def extract_all(path):
     return blocks
 
 
-def assert_position(path, job_headers=None):
+def assert_position(path, workflow=False):
     """Assert the resolution step precedes the CLI detect/install steps.
 
     The step's position is what makes it fail fast; the identity check above
     would happily accept it being moved back below the install steps.
+    Job sections are discovered dynamically, so a newly added CLI job cannot
+    escape the check.
     """
     lines = open(path, encoding="utf-8").read().splitlines()
-    sections = []
-    if job_headers:
-        starts = [i for i, line in enumerate(lines) if line in job_headers]
-        if len(starts) != len(job_headers):
-            raise SystemExit(
-                f"FAIL: {path}: expected {len(job_headers)} job header(s) "
-                f"{sorted(job_headers)}, found {len(starts)}"
-            )
+    if workflow:
+        starts = [i for i, line in enumerate(lines) if re.match(r"^  [A-Za-z0-9_-]+:$", line)]
+        sections = []
         for idx, start in enumerate(starts):
             end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
             sections.append((lines[start].strip(), start, end))
     else:
-        sections.append(("<file>", 0, len(lines)))
+        sections = [("<file>", 0, len(lines))]
 
     for name, start, end in sections:
         def find(step):
@@ -94,17 +92,19 @@ def assert_position(path, job_headers=None):
                     return i
             return None
 
+        detect_idx = find("- name: Detect Claude CLI path")
+        if detect_idx is None:
+            continue  # this job does not run the CLI
+        install_idx = find("- name: Install Claude CLI if missing")
         resolve_idx = find(STEP)
         if resolve_idx is None:
             raise SystemExit(
-                f"FAIL: {path} [{name}]: no '{STEP}' step; every job that runs "
-                "the CLI must resolve the context window"
+                f"FAIL: {path} [{name}]: CLI steps present but no '{STEP}' step; "
+                "every job that runs the CLI must resolve the context window"
             )
-        detect_idx = find("- name: Detect Claude CLI path")
-        install_idx = find("- name: Install Claude CLI if missing")
-        if detect_idx is None or install_idx is None:
+        if install_idx is None:
             raise SystemExit(
-                f"FAIL: {path} [{name}]: resolve step found but Detect/Install step missing"
+                f"FAIL: {path} [{name}]: resolve step found but Install step missing"
             )
         if not (resolve_idx < detect_idx and resolve_idx < install_idx):
             raise SystemExit(
@@ -120,20 +120,38 @@ def assert_output_wiring(path, expected):
     """Assert every CLI step still forwards the resolved value.
 
     The resolution block is useless if the claude-code-action step stops
-    reading it; assert one passthrough per resolve block.
+    reading it; locate each CLI step and require the passthrough inside it,
+    rather than counting the string file-wide.
     """
     lines = open(path, encoding="utf-8").read().splitlines()
     passthrough = "CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${{ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS }}"
-    found = sum(1 for line in lines if line.strip() == passthrough)
+    cli_names = ("- name: Automatic PR Review", "- name: Summarize reviews")
+    found = 0
+    for start, line in enumerate(lines):
+        if not any(line.strip().startswith(name) for name in cli_names):
+            continue
+        step_indent = len(line) - len(line.lstrip())
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            if lines[i].strip() and (len(lines[i]) - len(lines[i].lstrip())) <= step_indent \
+                    and lines[i].lstrip().startswith("- "):
+                end = i
+                break
+        if not any(lines[i].strip() == passthrough for i in range(start, end)):
+            raise SystemExit(
+                f"FAIL: {path}: CLI step at line {start + 1} does not forward "
+                f"'{passthrough}'"
+            )
+        found += 1
     if found != expected:
         raise SystemExit(
-            f"FAIL: {path}: expected {expected} '{passthrough}' line(s), found {found}"
+            f"FAIL: {path}: expected {expected} CLI step(s), found {found}"
         )
     print(f"OK: {path}: {found} CLI step(s) forward the resolved value")
 
 
 assert_position(action)
-assert_position(workflow, job_headers={"  review:", "  summarize:"})
+assert_position(workflow, workflow=True)
 assert_output_wiring(action, expected=1)
 assert_output_wiring(workflow, expected=2)
 

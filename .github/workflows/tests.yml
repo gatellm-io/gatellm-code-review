@@ -22,11 +22,15 @@ jobs:
           fetch-depth: 1
 
       - name: Run max_context_tokens resolution tests
+        env:
+          # Passed via env, not interpolated into the script body.
+          OS: ${{ matrix.os }}
         run: |
-          # Exercise the exact shell the action sees on macOS self-hosted
-          # runners (`shell: bash` -> /bin/bash 3.2), not Homebrew's bash.
+          # Production runs `shell: bash`, which resolves to /bin/bash 3.2 on
+          # the self-hosted macOS runners. GitHub-hosted macos-latest ships the
+          # same /bin/bash, so it is a conservative stand-in for that shell.
           # BASH_BIN is exported so the test reuses it for the extracted block.
-          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+          if [ "$OS" = "macos-latest" ]; then
             export BASH_BIN=/bin/bash
           else
             export BASH_BIN=bash
