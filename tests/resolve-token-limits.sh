@@ -89,12 +89,15 @@ def assert_header(path, start, input_name, step_name):
         )
 
 
-def assert_input_declared(path, input_name):
-    """Assert the input is declared in the file's `inputs:` section.
+def assert_input_declared(path, input_name, expected_default):
+    """Assert the input is declared in the file's `inputs:` section, with its default.
 
     A step that references `${{ inputs.<name> }}` still resolves to an empty
     string when the declaration is dropped, so the header and identity checks
     alone would leave every case green while the input silently stops working.
+    The default matters for the same reason: the shell cases inject
+    INPUT_TOKENS directly, so switching the default to a non-zero value would
+    make the input always win over the runner env without failing any case.
     The section is located by its key rather than a fixed line number.
     """
     lines = open(path, encoding="utf-8").read().splitlines()
@@ -102,14 +105,38 @@ def assert_input_declared(path, input_name):
     if start is None:
         raise SystemExit(f"FAIL: {path}: no 'inputs:' section found")
     inputs_indent = len(lines[start]) - len(lines[start].lstrip())
+
+    key_indent = None
     for line in lines[start + 1:]:
-        if line.strip() and (len(line) - len(line.lstrip())) <= inputs_indent:
+        indented = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if stripped and indented <= inputs_indent:
             break  # end of the inputs section
-        if line.strip().split(":")[0] == input_name:
-            print(f"OK: {path}: '{input_name}' is declared under 'inputs:'")
+        if key_indent is None:
+            if stripped.split(":")[0] == input_name:
+                key_indent = indented
+            continue
+        if stripped and indented <= key_indent:
+            break  # end of this input's block, no default found
+        if stripped.startswith("default:"):
+            actual = stripped.split(":", 1)[1].strip()
+            if actual != expected_default:
+                raise SystemExit(
+                    f"FAIL: {path}: input '{input_name}' has default {actual!r}, "
+                    f"expected {expected_default!r}"
+                )
+            print(
+                f"OK: {path}: '{input_name}' is declared under 'inputs:' "
+                f"with default {actual}"
+            )
             return
+
+    if key_indent is None:
+        raise SystemExit(
+            f"FAIL: {path}: input '{input_name}' is not declared under 'inputs:'"
+        )
     raise SystemExit(
-        f"FAIL: {path}: input '{input_name}' is not declared under 'inputs:'"
+        f"FAIL: {path}: input '{input_name}' has no 'default:' entry"
     )
 
 
@@ -198,8 +225,11 @@ def assert_output_wiring(path, env_var, expected):
 
 for input_name, step_name, env_var, default in SETTINGS:
     print(f"== {input_name} ({env_var}, default {default}) ==")
-    assert_input_declared(action, input_name)
-    assert_input_declared(workflow, input_name)
+    # The composite action's input is a string defaulting to "", the reusable
+    # workflow's is a number defaulting to 0 (see the README "Max context
+    # tokens" section); both mean "unset".
+    assert_input_declared(action, input_name, '""')
+    assert_input_declared(workflow, input_name, "0")
     assert_position(action, step_name)
     assert_position(workflow, step_name, workflow_src=True)
     assert_output_wiring(action, env_var, expected=1)

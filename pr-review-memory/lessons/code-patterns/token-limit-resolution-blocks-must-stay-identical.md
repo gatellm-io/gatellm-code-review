@@ -17,8 +17,10 @@ summarize job).
 **Why it bites:** `tests/resolve-token-limits.sh` extracts each copy by step name
 and fails if the dedented bodies differ, so editing only one copy turns CI red.
 Conversely, when adding a new token setting you must add the same step to all
-three files plus the `CLAUDE_CODE_MAX_*_TOKENS: ${{ env... }}` passthrough on
-every `claude-code-action` step, otherwise the wiring assertion fails.
+three copies (two files: `action.yml` and
+`.github/workflows/claude-auto-review.yml`) plus the
+`CLAUDE_CODE_MAX_*_TOKENS: ${{ env... }}` passthrough on every
+`claude-code-action` step, otherwise the wiring assertion fails.
 
 **Concrete action:** when changing validation/precedence/defaults, edit all three
 copies identically (keep the `trim()` / `sanitize()` helpers verbatim), then run
