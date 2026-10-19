@@ -236,6 +236,9 @@ Each run uploads artifacts for debugging (download from the workflow run's summa
 python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/claude-auto-review.yml'))"
 
+# max_context_tokens resolution regression test (also runs in the Tests workflow)
+bash tests/resolve-max-context-tokens.sh
+
 # actionlint (if installed)
 actionlint
 ```

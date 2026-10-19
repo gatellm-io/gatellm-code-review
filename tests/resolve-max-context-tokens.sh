@@ -46,6 +46,51 @@ def extract_all(path):
     return blocks
 
 
+def assert_position(path, job_headers=None):
+    """Assert the resolution step precedes the CLI detect/install steps.
+
+    The step's position is what makes it fail fast; the identity check above
+    would happily accept it being moved back below the install steps.
+    """
+    lines = open(path, encoding="utf-8").read().splitlines()
+    sections = []
+    if job_headers:
+        starts = [i for i, line in enumerate(lines) if line in job_headers]
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+            sections.append((lines[start].strip(), start, end))
+    else:
+        sections.append(("<file>", 0, len(lines)))
+
+    for name, start, end in sections:
+        def find(step):
+            for i in range(start, end):
+                if lines[i].strip() == step:
+                    return i
+            return None
+
+        resolve_idx = find(STEP)
+        if resolve_idx is None:
+            continue  # e.g. the setup job does not resolve context tokens
+        detect_idx = find("- name: Detect Claude CLI path")
+        install_idx = find("- name: Install Claude CLI if missing")
+        if detect_idx is None or install_idx is None:
+            raise SystemExit(
+                f"FAIL: {path} [{name}]: resolve step found but Detect/Install step missing"
+            )
+        if not (resolve_idx < detect_idx and resolve_idx < install_idx):
+            raise SystemExit(
+                f"FAIL: {path} [{name}]: '{STEP}' (line {resolve_idx + 1}) must precede "
+                f"'Detect Claude CLI path' (line {detect_idx + 1}) and "
+                f"'Install Claude CLI if missing' (line {install_idx + 1}) "
+                "so a caller typo fails before installing the CLI"
+            )
+        print(f"OK: {path} [{name}]: resolve precedes CLI detect/install")
+
+
+assert_position(action)
+assert_position(workflow, job_headers={"  review:", "  summarize:"})
+
 action_blocks = extract_all(action)
 workflow_blocks = extract_all(workflow)
 
