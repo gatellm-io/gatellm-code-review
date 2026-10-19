@@ -25,9 +25,10 @@ jobs:
         run: |
           # Exercise the exact shell the action sees on macOS self-hosted
           # runners (`shell: bash` -> /bin/bash 3.2), not Homebrew's bash.
+          # BASH_BIN is exported so the test reuses it for the extracted block.
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            BASH_BIN=/bin/bash
+            export BASH_BIN=/bin/bash
           else
-            BASH_BIN=bash
+            export BASH_BIN=bash
           fi
           "$BASH_BIN" tests/resolve-max-context-tokens.sh

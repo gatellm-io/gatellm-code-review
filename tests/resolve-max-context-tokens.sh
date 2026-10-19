@@ -18,7 +18,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 # Reuse the interpreter that started this script, so a macOS run genuinely
 # exercises /bin/bash 3.2 rather than whatever `bash` resolves to on PATH.
-BASH_BIN="${BASH:-bash}"
+BASH_BIN="${BASH_BIN:-${BASH:-bash}}"
 echo "bash: $BASH_VERSION ($BASH_BIN)"
 
 "$PY" - "$ACTION" "$WORKFLOW" "$tmpdir" <<'PY'
@@ -111,8 +111,26 @@ def assert_position(path, job_headers=None):
         print(f"OK: {path} [{name}]: resolve precedes CLI detect/install")
 
 
+def assert_output_wiring(path, expected):
+    """Assert every CLI step still forwards the resolved value.
+
+    The resolution block is useless if the claude-code-action step stops
+    reading it; assert one passthrough per resolve block.
+    """
+    lines = open(path, encoding="utf-8").read().splitlines()
+    passthrough = "CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${{ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS }}"
+    found = sum(1 for line in lines if line.strip() == passthrough)
+    if found != expected:
+        raise SystemExit(
+            f"FAIL: {path}: expected {expected} '{passthrough}' line(s), found {found}"
+        )
+    print(f"OK: {path}: {found} CLI step(s) forward the resolved value")
+
+
 assert_position(action)
 assert_position(workflow, job_headers={"  review:", "  summarize:"})
+assert_output_wiring(action, expected=1)
+assert_output_wiring(workflow, expected=2)
 
 action_blocks = extract_all(action)
 workflow_blocks = extract_all(workflow)
