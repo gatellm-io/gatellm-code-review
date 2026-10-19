@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       model:
-        description: "Single model name (backward compatible; used when models is empty, defaults to deepseek-v4-pro)"
+        description: "Single model name (backward compatible; used when models is empty; empty falls back to the Claude CLI default model)"
         required: false
         type: string
         default: ${{ vars.CODE_REVIEW_MODEL }}
@@ -27,6 +27,11 @@ on:
         required: false
         type: number
         default: 10000
+      max_context_tokens:
+        description: "Max context tokens for Claude Code, exported as CLAUDE_CODE_MAX_CONTEXT_TOKENS. Default 1000000. A runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable takes precedence over this input."
+        required: false
+        type: number
+        default: 1000000
       user_request:
         description: "User request content when triggered by @claude comment (optional)"
         required: false
@@ -347,10 +352,24 @@ jobs:
           echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
           echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
+      - name: Resolve max context tokens
+        shell: bash
+        run: |
+          # Default to the input value (1000000); a runner-provided
+          # CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable takes precedence.
+          if [ -n "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}" ]; then
+            echo "Using runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+          else
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS="${{ inputs.max_context_tokens }}"
+          fi
+          echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS}" >> $GITHUB_ENV
+
       - name: Automatic PR Review (${{ matrix.model }})
         id: review_1
         uses: anthropics/claude-code-action@v1
         continue-on-error: ${{ needs.setup.outputs.mode == 'multi' }}
+        env:
+          CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${{ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS }}
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
@@ -618,9 +637,23 @@ jobs:
           echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
           echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
+      - name: Resolve max context tokens
+        shell: bash
+        run: |
+          # Default to the input value (1000000); a runner-provided
+          # CLAUDE_CODE_MAX_CONTEXT_TOKENS environment variable takes precedence.
+          if [ -n "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}" ]; then
+            echo "Using runner-provided CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${CLAUDE_CODE_MAX_CONTEXT_TOKENS}"
+          else
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS="${{ inputs.max_context_tokens }}"
+          fi
+          echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS}" >> $GITHUB_ENV
+
       - name: Summarize reviews
         id: summarize_1
         uses: anthropics/claude-code-action@v1
+        env:
+          CLAUDE_CODE_MAX_CONTEXT_TOKENS: ${{ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS }}
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}

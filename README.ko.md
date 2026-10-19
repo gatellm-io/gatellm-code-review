@@ -10,7 +10,6 @@ Pull Request에 대한 코드 리뷰를 자동 생성하는 재사용 가능한 
 - PR 변경 라인 임계값(기본값 10000); 초과 시 자동 건너뜀; 수동 재실행으로 강제 실행을 지원합니다.
 - 각 실행 전에 과거 Claude 코멘트를 최소화하여 PR 노이즈를 낮게 유지합니다.
 - Claude CLI 자동 감지 + 폴백 설치(self-hosted runner에 사전 설치된 CLI를 재사용).
-- 리뷰 품질 검사(코멘트가 너무 짧을 경우 한 번 자동 재시도).
 - 리뷰 언어 파라미터화(`review_language`, 기본값 영어, 미지원 시 영어로 폴백) + 머신 파싱 가능한 `## TODO Fix List` 블록 + "Requires manual attention" 섹션 템플릿.
 
 ## 두 가지 사용 모드
@@ -53,7 +52,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
-          # 다른 모든 입력에는 기본값이 있습니다; 필요에 따라 재정의하세요
+          model: ${{ vars.CODE_REVIEW_MODEL }}   # 실질적으로 필수; 비어 있으면 실행 실패
+          # 나머지 입력에는 기본값이 있습니다; 필요에 따라 재정의하세요
 ```
 
 ### 모드 2: Reusable Workflow (권장, 다중 모델 지원)
@@ -78,7 +78,10 @@ jobs:
        github.event.comment.user.type != 'Bot' &&
        contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit           # CODE_REVIEW_API_KEY가 전달되도록 허용
+    # 참고: `secrets: inherit`는 동일 org/enterprise 내의 secrets만 전달합니다.
+    # cross-org 호출자는 API 키를 반드시 명시적으로 전달해야 하며, 그렇지 않으면 ANTHROPIC_API_KEY가 비어 있게 됩니다.
+    secrets:
+      CODE_REVIEW_API_KEY: ${{ secrets.CODE_REVIEW_API_KEY }}
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
       # 단일 모델: `models`를 비워두면 `model`로 폴백
@@ -96,7 +99,7 @@ jobs:
 | `anthropic_api_key` | string | `""` | Anthropic API 키 (호출자가 명시적으로 전달해야 함, 예: `${{ secrets.CODE_REVIEW_API_KEY }}`) |
 | `anthropic_base_url` | string | `""` | Anthropic API 베이스 URL (호출자가 명시적으로 전달해야 함, 예: `${{ vars.CODE_REVIEW_BASE_URL }}`; 게이트웨이를 통해 프록시할 때 사용) |
 | `github_token` | string | `${{ github.token }}` | GitHub 토큰; `pull-requests: write`, `issues: write`, `actions: read` 필요 |
-| `model` | string | `""` | 단일 모델 이름 (호출자가 `${{ vars.CODE_REVIEW_MODEL }}` 또는 리터럴을 전달할 수 있음; 비어 있으면 Claude CLI 기본 모델 사용) |
+| `model` | string | `""` | 단일 모델 이름 (실질적으로 필수: `${{ vars.CODE_REVIEW_MODEL }}` 또는 리터럴을 전달해야 함; 비어 있으면 실행 실패 — CLI 기본 모델로 자동 폴백되지 않음). `[1m]` 접미사는 1M 토큰 컨텍스트 윈도우 변형을 나타내며, 큰 PR에 권장 |
 | `max_lines` | number | `10000` | 최대 PR 변경 라인 수; 초과 시 리뷰 건너뜀; `-1`은 무제한을 의미 |
 | `user_request` | string | `""` | `@claude` 코멘트로 트리거된 경우 사용자 요청 내용 |
 | `review_language` | string | `"English"` | 리뷰 코멘트 언어 (예: `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); 비어 있거나 지원하지 않는 값은 영어로 폴백 |
@@ -106,7 +109,7 @@ jobs:
 
 | 이름 | 유형 | 기본값 | 설명 |
 |---|---|---|---|
-| `runs_on` | string | `"self-hosted, Linux, fargate-runner"` | Runner 라벨, 쉼표로 구분하거나 단일 라벨; setup/review/summarize 잡에 적용 |
+| `runs_on` | string | — (필수) | Runner 라벨, 쉼표로 구분하거나 단일 라벨; setup/review/summarize 잡에 적용. 기본값 없음 — 호출자가 명시적으로 전달해야 함 |
 | `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | 단일 모델 이름 (`models`가 비어 있을 때 사용) |
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | 쉼표로 구분된 모델 목록 (≥2이면 다중 모델 병렬 모드 활성화; 최대 3개, 초과분은 잘림) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | 요약 모델 이름 (다중 모델 모드에서 사용; 비어 있으면 `models`의 첫 번째 값을 사용) |
@@ -166,7 +169,7 @@ git push origin v1 --force
 setup 잡은 파싱된 `models` 수를 기준으로 모드를 결정합니다:
 
 - `models`가 ≥2로 파싱 → `mode=multi`: 매트릭스 병렬 리뷰; 결과는 `./claude-review-output.md`에 기록되어 아티팩트로 패키징; `summarize` 잡이 모든 아티팩트를 다운로드하여 병합, 중복 제거, 신뢰도 표시 후 하나의 요약 코멘트를 게시.
-- `models`가 ≤1로 파싱 → `mode=single`: 단일 모델 리뷰, 품질 검사 및 짧은 결과 재시도와 함께 PR 코멘트를 직접 게시.
+- `models`가 ≤1로 파싱 → `mode=single`: 단일 모델 리뷰, PR 코멘트를 직접 게시.
 
 > Composite Action은 항상 단일 모델 모드이며, `mode=single`과 동일합니다.
 
@@ -174,16 +177,16 @@ setup 잡은 파싱된 `models` 수를 기준으로 모드를 결정합니다:
 
 - `max_lines > 0`: PR `additions + deletions`이 이 값을 초과하면 리뷰를 건너뜀; 수동 재실행은 임계값 검사를 건너뜀.
 - `max_lines == -1`: 무제한.
-- `max_lines == 0`: 모든 PR을 거부.
+- `max_lines == 0`: 변경 사항이 있는 모든 PR을 건너뜀.
 
 ### 코멘트 최소화
 
-각 리뷰 전에 GraphQL `minimizeComment`를 호출하여 과거 Claude 코멘트를 `OUTDATED`로 접습니다. 리뷰 코멘트가 100자 미만으로 끝나면 자동으로 최소화되고 한 번 재시도됩니다. 다중 모델 모드에서는 이 로직이 `summarize` 잡에서 실행됩니다.
+각 리뷰 전에 GraphQL `minimizeComment`를 호출하여 과거 Claude 코멘트를 `OUTDATED`로 접습니다. 단일 모델 모드(composite action 포함)에서는 이 로직이 review 잡 내에서 실행되고, 다중 모델 모드에서는 `summarize` 잡에서 실행됩니다.
 
 ### Claude CLI 설치
 
 - Runner에 Claude CLI가 사전 설치됨 (일반적인 self-hosted 케이스): 직접 재사용.
-- 설치되지 않음 (일반적인 `ubuntu-latest` 케이스): `action.yml`이 먼저 `npm install -g @anthropic-ai/claude-code`를 시도하고, 실패하면 `curl -fsSL https://claude.ai/install.sh | bash`로 폴백 (npm은 Claude.ai 지역 차단의 영향을 받지 않으므로 권장). Reusable workflow는 PATH만 감지하고 설치하지 않음 (self-hosted runner 사전 설치에 의존).
+- 설치되지 않음 (일반적인 `ubuntu-latest` 케이스): composite action과 reusable workflow(review 및 summarize 잡) 모두 먼저 `npm install -g @anthropic-ai/claude-code`를 시도하고, 실패하면 `curl -fsSL https://claude.ai/install.sh | bash`로 폴백 (npm은 Claude.ai 지역 차단의 영향을 받지 않으므로 권장).
 
 ### 리뷰 출력 형식
 
@@ -197,6 +200,13 @@ setup 잡은 파싱된 `models` 수를 기준으로 모드를 결정합니다:
 4. **(다중 모델 전용)** 하단에 각 모델의 원본 리뷰가 있는 접힌 블록.
 
 자세한 내용은 `action.yml` / 워크플로 파일의 `prompt` 기본값을 참조하세요.
+
+### 아티팩트
+
+각 실행은 디버깅을 위해 아티팩트를 업로드합니다(워크플로 실행 요약 페이지에서 다운로드 가능):
+
+- `claude-exec-log*` (composite action 및 reusable workflow): Claude 실행 로그, 3일 보관.
+- `claude-review-*` (다중 모델 전용): 각 모델의 원본 리뷰 마크다운, 7일 보관; summarize 잡이 이를 가져와 병합된 코멘트를 생성합니다.
 
 ## 로컬 검증
 

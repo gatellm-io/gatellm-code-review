@@ -10,7 +10,6 @@
 - PR 変更行数のしきい値 (デフォルト 10000)。超過時は自動スキップし、手動再実行で強制実行できます。
 - 各実行前に過去の Claude コメントを最小化し、PR のノイズを抑えます。
 - Claude CLI の自動検出 + フォールバックインストール (セルフホステッドランナーではプレインストール済みの CLI を再利用)。
-- レビュー品質チェック (コメントが短すぎる場合に1回だけ自動リトライ)。
 - パラメータ化可能なレビュー言語 (`review_language`、デフォルトは英語、空の場合は英語にフォールバック) + 機械可読な `## TODO Fix List` ブロック + "Requires manual attention" セクションテンプレート。
 
 ## 2つの利用モード
@@ -53,7 +52,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CODE_REVIEW_API_KEY }}
           anthropic_base_url: ${{ vars.CODE_REVIEW_BASE_URL }}
-          # その他の入力はすべてデフォルト値があります。必要に応じて上書きしてください
+          model: ${{ vars.CODE_REVIEW_MODEL }}   # 実質必須。空の場合は実行が失敗します
+          # その他の入力はデフォルト値があります。必要に応じて上書きしてください
 ```
 
 ### モード 2: 再利用可能なワークフロー (推奨、マルチモデル対応)
@@ -78,7 +78,10 @@ jobs:
        github.event.comment.user.type != 'Bot' &&
        contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
-    secrets: inherit           # CODE_REVIEW_API_KEY を引き継ぐため
+    # 注意: `secrets: inherit` は同一組織/エンタープライズ内の secrets のみを引き継ぎます。
+    # 組織間をまたぐ呼び出し元は API キーを明示的に渡す必要があります。渡さないと ANTHROPIC_API_KEY が空になります。
+    secrets:
+      CODE_REVIEW_API_KEY: ${{ secrets.CODE_REVIEW_API_KEY }}
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
       # シングルモデル: `models` を空にすると `model` にフォールバックします
@@ -96,7 +99,7 @@ jobs:
 | `anthropic_api_key` | string | `""` | Anthropic API キー (呼び出し元が明示的に渡す必要があります。例: `${{ secrets.CODE_REVIEW_API_KEY }}`) |
 | `anthropic_base_url` | string | `""` | Anthropic API ベース URL (呼び出し元が明示的に渡す必要があります。例: `${{ vars.CODE_REVIEW_BASE_URL }}`。ゲートウェイ経由でプロキシする場合に使用) |
 | `github_token` | string | `${{ github.token }}` | GitHub トークン。`pull-requests: write`、`issues: write`、`actions: read` が必要 |
-| `model` | string | `""` | シングルモデル名 (呼び出し元は `${{ vars.CODE_REVIEW_MODEL }}` またはリテラル値を渡せます。空 = Claude CLI のデフォルトモデルを使用) |
+| `model` | string | `""` | シングルモデル名 (実質必須: `${{ vars.CODE_REVIEW_MODEL }}` またはリテラル値を渡してください。空の場合は実行が失敗します — CLI のデフォルトモデルへのサイレントフォールバックはありません)。`[1m]` サフィックスは 100万トークンコンテキストウィンドウ版を示し、大規模な PR に推奨されます |
 | `max_lines` | number | `10000` | PR の最大変更行数。超過時はレビューをスキップ。`-1` は無制限 |
 | `user_request` | string | `""` | `@claude` コメントでトリガーされた場合のユーザーリクエスト内容 |
 | `review_language` | string | `"English"` | レビューコメントの言語 (例: `English`、`Simplified Chinese`、`Traditional Chinese`、`Japanese`、`Korean`)。空または未対応の値は英語にフォールバック |
@@ -106,7 +109,7 @@ jobs:
 
 | 名前 | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `runs_on` | string | `"self-hosted, Linux, fargate-runner"` | ランナーラベル。カンマ区切りまたは単一ラベル。setup/review/summarize ジョブに適用 |
+| `runs_on` | string | — (必須) | ランナーラベル。カンマ区切りまたは単一ラベル。setup/review/summarize ジョブに適用。デフォルトなし — 呼び出し元が明示的に渡す必要があります |
 | `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | シングルモデル名 (`models` が空の場合に使用) |
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | カンマ区切りのモデルリスト (≥2 でマルチモデル並列モードを有効化、最大 3、超過分は切り捨て) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | サマリーモデル名 (マルチモデルモードで使用。空の場合は `models` の先頭を採用) |
@@ -166,7 +169,7 @@ git push origin v1 --force
 setup ジョブはパースされた `models` の数に基づいてモードを決定します:
 
 - `models` が ≥2 にパースされる → `mode=multi`: マトリクス並列レビュー。結果は `./claude-review-output.md` に書き込まれ、アーティファクトとしてパッケージ化されます。`summarize` ジョブがすべてのアーティファクトをダウンロードし、マージ・重複排除・信頼度付与を行い、1つのサマリーコメントを投稿します。
-- `models` が ≤1 にパースされる → `mode=single`: シングルモデルレビュー。PR コメントを直接投稿し、品質チェックと短結果リトライを実施します。
+- `models` が ≤1 にパースされる → `mode=single`: シングルモデルレビュー。PR コメントを直接投稿します。
 
 > コンポジットアクションは常にシングルモデルモードで、`mode=single` と同等です。
 
@@ -174,16 +177,16 @@ setup ジョブはパースされた `models` の数に基づいてモードを�
 
 - `max_lines > 0`: PR の `additions + deletions` がこの値を超える場合、レビューをスキップします。手動再実行はしきい値チェックをスキップします。
 - `max_lines == -1`: 無制限。
-- `max_lines == 0`: いかなる PR も拒否します。
+- `max_lines == 0`: 変更のあるすべての PR をスキップします。
 
 ### コメントの最小化
 
-各レビュー前に、GraphQL の `minimizeComment` を呼び出し、過去の Claude コメントを `OUTDATED` として折り畳みます。レビューコメントが 100 文字未満になった場合、自動的に最小化して1回リトライします。マルチモデルモードでは、このロジックは `summarize` ジョブで実行されます。
+各レビュー前に、GraphQL の `minimizeComment` を呼び出し、過去の Claude コメントを `OUTDATED` として折り畳みます。シングルモデルモード (コンポジットアクションを含む) では review ジョブ内で実行され、マルチモデルモードでは `summarize` ジョブで実行されます。
 
 ### Claude CLI のインストール
 
 - ランナーに Claude CLI がプレインストール済み (典型的なセルフホステッドケース): そのまま再利用。
-- プレインストールされていない場合 (典型的な `ubuntu-latest` ケース): `action.yml` はまず `npm install -g @anthropic-ai/claude-code` を試行し、次に `curl -fsSL https://claude.ai/install.sh | bash` にフォールバックします (npm は Claude.ai の地域ブロックの影響を受けないため推奨)。再利用可能なワークフローは PATH の検出のみ行い、インストールは行いません (セルフホステッドランナーのプレインストールに依存)。
+- プレインストールされていない場合 (典型的な `ubuntu-latest` ケース): コンポジットアクションおよび再利用可能なワークフロー (review ジョブと summarize ジョブ) は、まず `npm install -g @anthropic-ai/claude-code` を試行し、次に `curl -fsSL https://claude.ai/install.sh | bash` にフォールバックします (npm は Claude.ai の地域ブロックの影響を受けないため推奨)。
 
 ### レビュー出力フォーマット
 
@@ -197,6 +200,13 @@ setup ジョブはパースされた `models` の数に基づいてモードを�
 4. **(マルチモデルのみ)** 各モデルのオリジナルレビューを含む折り畳みブロックが末尾に配置されます。
 
 詳細は `action.yml` / ワークフローファイルの `prompt` デフォルトを参照してください。
+
+### アーティファクト
+
+各実行はデバッグ用のアーティファクトをアップロードします (ワークフロー実行のサマリーページからダウンロードできます):
+
+- `claude-exec-log*` (コンポジットアクションおよび再利用可能なワークフロー): Claude の実行ログ。3日間保持されます。
+- `claude-review-*` (マルチモデルのみ): 各モデルの生のレビュー Markdown。7日間保持されます。summarize ジョブがこれを消費してマージされたコメントを構築します。
 
 ## ローカル検証
 
