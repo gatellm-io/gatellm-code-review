@@ -21,6 +21,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Validate workflow YAML
+        run: |
+          ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f, aliases: true) }' \
+            action.yml \
+            .github/workflows/claude-auto-review.yml \
+            .github/workflows/tests.yml
+
       - name: Run max_context_tokens resolution tests
         env:
           # Passed via env, not interpolated into the script body.

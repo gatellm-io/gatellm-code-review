@@ -189,9 +189,9 @@ assert_case() {
   : > "$envfile"
 
   local status=0
-  # Mirror the runner's `shell: bash` invocation: --noprofile --norc -eo pipefail.
+  # Mirror the runner's `shell: bash` invocation exactly.
   INPUT_TOKENS="$input" CLAUDE_CODE_MAX_CONTEXT_TOKENS="$runner" GITHUB_ENV="$envfile" \
-    "$BASH_BIN" -eo pipefail "$script" >"$log" 2>&1 || status=$?
+    "$BASH_BIN" --noprofile --norc -eo pipefail "$script" >"$log" 2>&1 || status=$?
 
   if [ "$status" -ne "$expected_status" ]; then
     echo "FAIL [$name]: expected exit $expected_status, got $status"
@@ -241,6 +241,8 @@ assert_case "negative input fails"              "-1"      ""        1
 assert_case "shell injection input fails"       "2000000; rm -rf /" "" 1
 assert_case "invalid runner env warns and falls back" "" "1M"      0 "1000000" "::warning::"
 assert_case "invalid explicit 0 spelling fails"  "00"      ""        1
+assert_case "explicit +0 spelling fails"         "+0"      ""        1
+assert_case "explicit 0.0 spelling fails"        "0.0"     ""        1
 
 # Error messages must not emit a second workflow-command line when the value
 # contains an embedded newline.

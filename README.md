@@ -232,9 +232,9 @@ Each run uploads artifacts for debugging (download from the workflow run's summa
 ## Local validation
 
 ```bash
-# YAML syntax check
-python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
-python3 -c "import yaml; yaml.safe_load(open('.github/workflows/claude-auto-review.yml'))"
+# YAML syntax check (Ruby ships with macOS and the GitHub runners)
+ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f, aliases: true) }' \
+  action.yml .github/workflows/claude-auto-review.yml .github/workflows/tests.yml
 
 # max_context_tokens resolution regression test (also runs in the Tests workflow)
 bash tests/resolve-max-context-tokens.sh
