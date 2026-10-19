@@ -115,7 +115,7 @@ jobs:
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | Comma-separated model list (≥2 enables multi-model parallel mode; max 3, extras truncated) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | Summary model name (used in multi-model mode; empty takes the first of `models`) |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
-| `max_context_tokens` | number | `0` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit non-zero value overrides everything; `0` (the default) falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` |
+| `max_context_tokens` | number | `0` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit non-zero value overrides everything, but a non-integer value fails the job; `0` (the default) falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` |
 | `user_request` | string | `""` | User request content when triggered by `@claude` comment |
 | `review_language` | string | `"English"` | Review comment language (e.g. `English`, `Simplified Chinese`, `Traditional Chinese`, `Japanese`, `Korean`); empty or unsupported value falls back to English |
 | `prompt` | string | (see workflow file) | Custom review prompt (language requirement is injected separately based on `review_language`, not baked into the prompt default) |
@@ -205,7 +205,9 @@ Validation differs by source (both sources are trimmed of surrounding whitespace
 - An explicit, non-empty, non-zero `max_context_tokens` input that is not a positive integer fails the job early (`::error::`) — caller mistakes are loud.
 - A runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var is treated as a hint: `0` means unset, and any other non-positive-integer value (e.g. `1M`) emits a `::warning::` and falls back to `1000000`, so a misconfigured runner degrades instead of breaking the whole pipeline.
 
-The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step.
+**Upgrade note:** an explicit `max_context_tokens` always wins over the runner value. If a caller sets the input only to mirror an old default and expects a larger runner-provided value to apply, it must omit the input (composite action) or pass `0` (reusable workflow) after upgrading.
+
+The composite action and reusable workflow both resolve this into the `env` of the `claude-code-action` step. A regression test (`tests/resolve-max-context-tokens.sh`) asserts the three copies of the resolution logic stay identical and exercises the table above; it runs in the `Tests` workflow.
 
 ### Review output format
 
