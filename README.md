@@ -136,6 +136,10 @@ The caller repo needs the following in Settings → Secrets and variables → Ac
 
 > To share the same credentials across all repos in an org, consider [Organization-level secrets and variables](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-organization).
 
+## Runner requirements
+
+**Self-hosted runners must run Actions Runner >= 2.327.1 with `node24` support.** The artifact steps use `actions/upload-artifact@v7` and `actions/download-artifact@v8`, which run on Node.js 24 and state a minimum Actions Runner version of 2.327.1. An older runner fails those steps: the debug-log upload is skipped/failed, and in multi-model mode the `summarize` job then fails with `Artifact not found for pattern claude-review-*`, so no summary comment is posted. GitHub-hosted runners are always current; this only affects self-hosted fleets, including the `[self-hosted, Linux, fargate-runner]` example in Mode 2 — upgrade them before moving the rolling `v1` tag to a release containing this change.
+
 ## Permission requirements
 
 The caller job's `permissions` must include:
