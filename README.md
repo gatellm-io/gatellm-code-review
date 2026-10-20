@@ -136,6 +136,10 @@ The caller repo needs the following in Settings → Secrets and variables → Ac
 
 > To share the same credentials across all repos in an org, consider [Organization-level secrets and variables](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-organization).
 
+## Runner requirements
+
+**Self-hosted runners must run Actions Runner >= 2.327.1 with `node24` support.** The steps in this action use `actions/checkout@v7`, `actions/github-script@v9`, `actions/upload-artifact@v7` and `actions/download-artifact@v8`; all four run on Node.js 24, and the artifact actions state a minimum Actions Runner version of 2.327.1 (`checkout`/`github-script` carry the same floor). An older runner fails those steps: `Upload execution log` fails, and in multi-model mode `Upload review artifact` fails too, so the `summarize` job then fails at `Download all review artifacts` with `Artifact not found for pattern claude-review-*` and no summary comment is posted. GitHub-hosted runners are always current; this only affects self-hosted fleets, including the `[self-hosted, Linux, fargate-runner]` example in Mode 2 — upgrade them before moving the rolling `v1` tag to a release containing this change.
+
 ## Permission requirements
 
 The caller job's `permissions` must include:
@@ -240,7 +244,7 @@ See the `prompt` defaults in `action.yml` / the workflow file for full details.
 
 Each run uploads artifacts for debugging (download from the workflow run's summary page):
 
-- `claude-exec-log*` (composite action and reusable workflow): Claude execution logs, retained 3 days.
+- `claude-exec-log*` (composite action and reusable workflow): Claude execution logs, retained 1 day by the composite action and 3 days by the reusable workflow.
 - `claude-review-*` (multi-model only): each model's raw review markdown, retained 7 days; the summarize job consumes them to build the merged comment.
 
 ## Local validation
