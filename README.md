@@ -138,7 +138,7 @@ The caller repo needs the following in Settings → Secrets and variables → Ac
 
 ## Runner requirements
 
-**Self-hosted runners must run Actions Runner >= 2.327.1 with `node24` support.** The artifact steps use `actions/upload-artifact@v7` and `actions/download-artifact@v8`, which run on Node.js 24 and state a minimum Actions Runner version of 2.327.1. An older runner fails those steps: the debug-log upload is skipped/failed, and in multi-model mode the `summarize` job then fails with `Artifact not found for pattern claude-review-*`, so no summary comment is posted. GitHub-hosted runners are always current; this only affects self-hosted fleets, including the `[self-hosted, Linux, fargate-runner]` example in Mode 2 — upgrade them before moving the rolling `v1` tag to a release containing this change.
+**Self-hosted runners must run Actions Runner >= 2.327.1 with `node24` support.** The artifact steps use `actions/upload-artifact@v7` and `actions/download-artifact@v8`, which run on Node.js 24 and state a minimum Actions Runner version of 2.327.1. An older runner fails those steps: the `Upload execution log` step fails, and in multi-model mode the `Upload review artifact` step fails too, so the `summarize` job then fails at `Download all review artifacts` with `Artifact not found for pattern claude-review-*` and no summary comment is posted. GitHub-hosted runners are always current; this only affects self-hosted fleets, including the `[self-hosted, Linux, fargate-runner]` example in Mode 2 — upgrade them before moving the rolling `v1` tag to a release containing this change.
 
 ## Permission requirements
 
