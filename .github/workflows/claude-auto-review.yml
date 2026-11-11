@@ -175,7 +175,7 @@ jobs:
             core.setOutput('engine', engine);
             core.info(`Resolved engine=${engine}`);
             if (engine !== 'claude-code') {
-              core.warning('The dsh engine runs with an unrestricted shell and both the gateway API key and the GitHub token in its environment. Fork PRs are skipped automatically.');
+              core.warning('The dsh engine runs with an unrestricted shell and both the gateway API key and the GitHub token in its environment. Fork PRs are skipped automatically. The posture and its mitigations are recorded in the README Security section.');
             }
 
             // — 1) Model parsing (always executed to ensure matrix is always valid JSON) —

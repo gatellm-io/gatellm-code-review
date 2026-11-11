@@ -197,13 +197,15 @@ Practical consequences and the built-in mitigation:
 - **Trigger surface.** For `issue_comment` triggers, anyone who can comment can start a run. Add an `author_association` guard to the caller's `if:` condition when using the dsh engine on a public repository, e.g. `contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)`.
 - **Default stays `claude-code`.** Switching to dsh is an explicit, per-workflow decision.
 
-**Decision recorded for this action.** The `dsh` engine stays opt-in and the default engine is unchanged. The residual exposure described above — an unrestricted shell running in the same process as the gateway key and the GitHub token — is accepted for callers that explicitly select `dsh`, on the strength of the controls in this section: the fail-closed fork guard, fail-closed staging and redaction of uploaded diagnostics, run-scoped uploads with post-upload cleanup, and an isolated `$DSH_HOME`. Callers that expose an `issue_comment` trigger must apply the `author_association` guard (both shipped examples do). Repositories that do not accept the trade-off keep `claude-code`, where none of this applies.
+**Decision recorded for this action (2026-11-11, PR #8).** The `dsh` engine stays opt-in and the default engine is unchanged. The residual exposure described above — an unrestricted shell running in the same process as the gateway key and the GitHub token — is accepted for callers that explicitly select `dsh`, on the strength of the controls in this section: the fail-closed fork guard, fail-closed staging and redaction of uploaded diagnostics, run-scoped uploads with post-upload cleanup, and an isolated `$DSH_HOME`. Callers that expose an `issue_comment` trigger must apply the `author_association` guard (both shipped examples do). Repositories that do not accept the trade-off keep `claude-code`, where none of this applies. This paragraph is the repository's record of the decision — the `setup` job repeats the disclosure as a `::warning::` on every dsh run — so changing the posture means changing this paragraph, not silently re-tuning `run.sh`.
 
 ## Versioning
 
 - `v1`: rolling tag, points to the latest 1.x release
 - `v1.0.0` etc.: semantic tags that pin an exact version
 - `main`: development branch, not recommended for production use
+
+**Pre-release check for the `dsh` engine.** Before a release containing the `dsh` engine moves the rolling `v1` tag, run it once on the target self-hosted runner and record the outcome (date, runner, model, result) in the release notes: a complete dsh turn, the review comment posted via `gh pr comment` (single-model) or the merged summary (multi-model), and the cross-repository `scripts/` sparse checkout resolving. None of those can be verified from the diff, and the unit tests run offline against test doubles.
 
 Release flow:
 
