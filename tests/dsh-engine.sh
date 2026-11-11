@@ -12,6 +12,10 @@ DSH_DIR="$ROOT/scripts/engines/dsh"
 FIXTURES="$ROOT/tests/fixtures"
 PY="${PYTHON:-python3}"
 BASH_BIN="${BASH_BIN:-${BASH:-bash}}"
+# Resolve to an absolute path now: several cases run with a restricted PATH
+# that contains no `bash`, and a bare name would then fail to launch.
+BASH_BIN="$(command -v "$BASH_BIN" || true)"
+[ -n "$BASH_BIN" ] || { echo "FAIL: cannot resolve the bash interpreter" >&2; exit 1; }
 
 if ! command -v node >/dev/null 2>&1; then
   echo "FAIL: node is required to run the dsh engine tests" >&2
@@ -30,8 +34,12 @@ failures=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; failures=$((failures + 1)); }
 
+dump_context() {
+  # The last command's captured output, so a CI failure is diagnosable.
+  [ -s "$tmpdir/out" ] && { echo "    --- last output ---"; sed 's/^/    /' "$tmpdir/out" | tail -n 15; }
+}
 assert_eq() { # name expected actual
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$2', got '$3')"; fi
+  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$2', got '$3')"; dump_context; fi
 }
 assert_contains() { # name haystack needle
   case "$2" in

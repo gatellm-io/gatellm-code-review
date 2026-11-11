@@ -15,8 +15,10 @@ set -uo pipefail
 REQUIRED="${DSH_NODE_MIN_VERSION:-24.9.0}"
 
 # Extra directories to probe when `node` is not on PATH. Overridable so tests
-# can point the search at a scratch directory.
-SEARCH_DIRS="${DSH_NODE_SEARCH_DIRS:-/opt/homebrew/bin /usr/local/bin $HOME/.nvm/versions/node/*/bin}"
+# can point the search at a scratch directory; an explicitly empty value means
+# "search nowhere", which `:-` would have treated as unset and replaced with
+# the defaults.
+SEARCH_DIRS="${DSH_NODE_SEARCH_DIRS-/opt/homebrew/bin /usr/local/bin $HOME/.nvm/versions/node/*/bin}"
 
 parse_version() {
   local v="$1"
