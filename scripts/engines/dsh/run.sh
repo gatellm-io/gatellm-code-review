@@ -34,6 +34,16 @@ if [ -z "$DSH_BIN" ] || [ ! -x "$DSH_BIN" ]; then
   exit 1
 fi
 
+# `skipped` lets the workflow tell an intentional skip (fork PR) apart from a
+# failed leg: packaging a "no output" placeholder for a skipped leg would make
+# the summarize job report a missing model for a PR the engine refused to read.
+# It stays `false` for every other outcome, so genuine failures keep behaving
+# exactly as before.
+set_step_output() { # name value
+  [ -n "${GITHUB_OUTPUT:-}" ] || return 0
+  printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT" 2>/dev/null || true
+}
+
 # The fork guard shells out to `gh`; say so plainly instead of failing later
 # with a generic "unable to determine" message when the CLI is not installed.
 if ! command -v gh >/dev/null 2>&1; then
@@ -62,6 +72,7 @@ fi
 if [ "$CROSS_REPO" = "true" ]; then
   # A skip exits 0, so make it legible: otherwise the run looks green with no
   # review for no stated reason.
+  set_step_output skipped true
   echo "::notice::PR #$PR_NUMBER is from a fork; skipping the dsh review (an unrestricted agent must not read untrusted PR content with repository secrets available)."
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
@@ -78,6 +89,7 @@ if [ "$CROSS_REPO" != "false" ]; then
   echo "::error::Fork check for PR #$PR_NUMBER returned '$CROSS_REPO' instead of true or false; refusing to run the dsh engine."
   exit 1
 fi
+set_step_output skipped false
 
 # --- Isolated harness home -------------------------------------------------
 # A fresh DSH_HOME per run keeps profiles, sessions and settings from leaking
@@ -188,25 +200,59 @@ fi
 # scrubbed is deleted from staging; if even the delete fails, nothing at all is
 # published, so the upload directory never receives a file we could not clean.
 # Every failure is announced rather than silently ignored.
+#
+# The variants below are the encodings a log can realistically record instead of
+# the literal value: base64 in both alphabets, padded and unpadded. The
+# credential formats in use are alphanumeric plus `-`/`_`, so JSON escaping and
+# URL-encoding leave them byte-identical and add nothing. Anything that
+# transforms them further (compression, reversal, wrapping across lines) is out
+# of scope -- this scrubber is defence-in-depth hygiene, not the security
+# boundary; the fork guard is what keeps untrusted PR content away from the
+# credentials.
+secret_variants() { # secret
+  local secret="$1" b64
+  printf '%s\n' "$secret"
+  command -v base64 >/dev/null 2>&1 || return 1
+  # GNU base64 wraps at 76 columns, BSD does not; strip the newlines so the
+  # unwrapped form is what we match.
+  b64="$(printf '%s' "$secret" | base64 2>/dev/null | tr -d '\r\n')" || return 1
+  [ -n "$b64" ] || return 1
+  printf '%s\n' "$b64"
+  printf '%s\n' "${b64%%=*}"
+  printf '%s\n' "$(printf '%s' "$b64" | tr '+/' '-_')"
+  printf '%s\n' "$(printf '%s' "$b64" | tr '+/' '-_' | sed 's/=*$//')"
+}
+
 redact_secrets() {
-  local dir="$1" file secret escaped tmp failed
+  local dir="$1" file secret variants variant escaped tmp failed
   while IFS= read -r file; do
     [ -f "$file" ] || continue
     failed=0
     tmp=""
     for secret in "${ANTHROPIC_API_KEY:-}" "${GATELLM_REVIEW_API_KEY:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"; do
       [ -n "$secret" ] || continue
-      # Escape sed's regex metacharacters so the secret is matched literally.
-      if ! escaped="$(printf '%s' "$secret" | sed 's/[][\\.*^$|&/]/\\&/g')"; then
+      # A secret whose variants cannot be derived is not scrubbed: treat that
+      # like any other scrub failure below rather than silently matching only
+      # part of it.
+      if ! variants="$(secret_variants "$secret")"; then
         failed=1
         break
       fi
-      tmp="$file.redacting"
-      if ! sed "s/$escaped/***REDACTED***/g" "$file" > "$tmp" 2>/dev/null ||
-        ! mv "$tmp" "$file" 2>/dev/null; then
-        failed=1
-        break
-      fi
+      while IFS= read -r variant; do
+        [ -n "$variant" ] || continue
+        # Escape sed's regex metacharacters so the variant is matched literally.
+        if ! escaped="$(printf '%s' "$variant" | sed 's/[][\\.*^$|&/]/\\&/g')"; then
+          failed=1
+          break 2
+        fi
+        tmp="$file.redacting"
+        if ! sed "s/$escaped/***REDACTED***/g" "$file" > "$tmp" 2>/dev/null ||
+          ! mv "$tmp" "$file" 2>/dev/null; then
+          failed=1
+          break 2
+        fi
+      done <<< "$variants"
+      [ "$failed" -eq 0 ] || break
     done
     if [ "$failed" -ne 0 ]; then
       rm -f "$tmp" 2>/dev/null || true

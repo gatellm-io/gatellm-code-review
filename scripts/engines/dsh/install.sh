@@ -28,15 +28,18 @@ if ! is_valid_version "$VERSION"; then
   exit 1
 fi
 
-# npm gets the exact requested spec; comparisons use the normalized form, which
-# drops build metadata (it does not affect version precedence).
+# Everything after this point uses the normalized form, which drops build
+# metadata (semver: it does not take part in precedence). Detection compares on
+# that same form, so `1.2.3+build` must install what it detects: passing the raw
+# spelling to npm would ask the registry for a spec that detection then reports
+# as a different version.
 VERSION_KEY="$(normalize_version "$VERSION")"
 [ -n "$VERSION_KEY" ] || {
   echo "::error::Invalid dsh_version '$VERSION': expected a plain semantic version such as 0.2.2-rc.1."
   exit 1
 }
 
-SPEC="@deepseek-ai/dsh@$VERSION"
+SPEC="@deepseek-ai/dsh@$VERSION_KEY"
 
 fail_install() {
   echo "::error::Failed to locate dsh CLI after install (requested $VERSION)."

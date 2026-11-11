@@ -154,6 +154,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       summary_model: ${{ steps.plan.outputs.summary_model }}
       engine: ${{ steps.plan.outputs.engine }}
+      is_fork: ${{ steps.plan.outputs.is_fork }}
     steps:
       - name: Resolve model matrix & check PR size
         id: plan
@@ -204,7 +205,25 @@ jobs:
             core.setOutput('summary_model', summaryModel);
             core.info(`Resolved mode=${mode}, models=[${models.join(', ')}], summary_model=${summaryModel}`);
 
-            // — 2) PR size check (skip if run_attempt>1; disabled if max_lines=-1) —
+            // — 2) PR facts: fork status always, size only when the check runs —
+            // run.sh refuses to run the dsh engine on a fork PR; the summarize
+            // job needs the same fact up front, otherwise a multi-model run made
+            // entirely of skipped legs ends in a "no output" failure instead of
+            // a clean skip. Fetched before the size-check early returns so the
+            // value is available on manual reruns and when max_lines is -1.
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const baseFullName = `${context.repo.owner}/${context.repo.repo}`;
+            // A null head repo means the fork was deleted: treat it as a fork.
+            const isFork = !pr.head?.repo || pr.head.repo.full_name !== baseFullName;
+            core.setOutput('is_fork', String(isFork));
+            core.info(`PR head repo: ${pr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
+
+            // Size check (skip if run_attempt>1; disabled if max_lines=-1)
             const runAttempt = parseInt('${{ github.run_attempt }}');
             if (runAttempt > 1) {
               core.info(`Manual rerun detected (attempt ${runAttempt}), skipping size check.`);
@@ -217,12 +236,6 @@ jobs:
               core.setOutput('too_large', 'false');
               return;
             }
-            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
             const totalLines = pr.additions + pr.deletions;
             core.info(`PR total changed lines: ${totalLines} (additions: ${pr.additions}, deletions: ${pr.deletions})`);
             if (totalLines > maxLines) {
@@ -632,7 +645,9 @@ jobs:
           if-no-files-found: ignore
 
       - name: Package review output
-        if: ${{ !cancelled() && needs.setup.outputs.mode == 'multi' }}
+        # A leg the dsh engine skipped (fork PR) has no review by design: skip
+        # packaging too, so no "no output" placeholder becomes a fake result.
+        if: ${{ !cancelled() && needs.setup.outputs.mode == 'multi' && steps.review_dsh.outputs.skipped != 'true' }}
         shell: bash
         run: |
           mkdir -p review-output
@@ -650,7 +665,7 @@ jobs:
           echo "Packaged review output to $OUT"
 
       - name: Upload review artifact
-        if: ${{ !cancelled() && needs.setup.outputs.mode == 'multi' }}
+        if: ${{ !cancelled() && needs.setup.outputs.mode == 'multi' && steps.review_dsh.outputs.skipped != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: claude-review-${{ matrix.slug }}
@@ -660,7 +675,10 @@ jobs:
 
   summarize:
     needs: [setup, review]
-    if: ${{ !cancelled() && needs.setup.outputs.too_large != 'true' && needs.setup.outputs.mode == 'multi' }}
+    # With the dsh engine every leg skips a fork PR, so there is nothing to
+    # merge: skip the job instead of failing on zero artifacts or posting an
+    # "absent model" summary. claude-code keeps its existing behavior.
+    if: ${{ !cancelled() && needs.setup.outputs.too_large != 'true' && needs.setup.outputs.mode == 'multi' && !(needs.setup.outputs.engine == 'dsh' && needs.setup.outputs.is_fork == 'true') }}
     runs-on: ${{ inputs.runs_on }}
     concurrency:
       group: claude-review-summary-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}

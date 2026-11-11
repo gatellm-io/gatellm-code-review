@@ -58,7 +58,7 @@ assert_not_contains() { # name haystack needle
 # A minimal PATH holding only the tools the scripts use, so `command -v dsh`
 # and `command -v npm` cannot accidentally find the developer's real tools.
 mkdir -p "$tmpdir/tools" "$tmpdir/bin" "$tmpdir/home" "$tmpdir/workspace" "$tmpdir/empty"
-for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find; do
+for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find base64; do
   src="$(command -v "$tool" 2>/dev/null || true)"
   [ -n "$src" ] && ln -sf "$src" "$tmpdir/tools/$tool"
 done
@@ -227,6 +227,14 @@ rm -rf "$SANDBOX_HOME/.local" "$tmpdir/toolcache"
 status="$(install_run '' FAKE_NPM_SKIP_WRITE=1)"
 assert_eq "install: fails when no binary appears" 1 "$status"
 
+# Build metadata must install the same version detection matches: npm gets the
+# normalized form, never a `+build` spelling the registry may not publish.
+rm -rf "$SANDBOX_HOME/.local" "$tmpdir/toolcache"
+status="$(install_run '0.2.1+build')"
+assert_eq "install: build metadata is accepted" 0 "$status"
+assert_contains "install: npm receives the normalized version" "$(cat "$tmpdir/npm.log")" "@deepseek-ai/dsh@0.2.1"
+assert_not_contains "install: npm never receives build metadata" "$(cat "$tmpdir/npm.log")" "+build"
+
 status="$(install_run 'not a version')"
 assert_eq "install: rejects an invalid version" 1 "$status"
 assert_eq "install: invalid version never reaches npm" 0 "$(grep -c '@deepseek-ai/dsh' "$tmpdir/npm.log" || true)"
@@ -350,8 +358,8 @@ fi
 echo "== run.sh =="
 run_case() { # slug [extra env...]
   local slug="$1"; shift
-  : > "$tmpdir/argv"; : > "$tmpdir/env"
-  env PATH="$SANDBOX_PATH" HOME="$SANDBOX_HOME" \
+  : > "$tmpdir/argv"; : > "$tmpdir/env"; : > "$tmpdir/run_gh_output"
+  env PATH="$SANDBOX_PATH" HOME="$SANDBOX_HOME" GITHUB_OUTPUT="$tmpdir/run_gh_output" \
     ROLE=review MODE=single MODEL='deepseek-v4-pro' REPO='o/r' PR_NUMBER='7' \
     USER_REQUEST='' REVIEW_LANGUAGE='English' REVIEW_PROMPT='do the thing' \
     ANTHROPIC_BASE_URL='' ANTHROPIC_API_KEY='sk-test' GH_TOKEN='ghs_test' \
@@ -366,6 +374,8 @@ run_case() { # slug [extra env...]
 
 status="$(run_case test-pass)"
 assert_eq "run: exits with dsh's status" 0 "$status"
+assert_contains "run: a normal run reports that it was not skipped" \
+  "$(cat "$tmpdir/run_gh_output")" "skipped=false"
 assert_eq "run: profile + headless + patch + prompt" "#argc=5" "$(sed -n '1p' "$tmpdir/argv")"
 assert_eq "run: first arg is --profile" "--profile" "$(sed -n '2p' "$tmpdir/argv")"
 assert_eq "run: second arg is headless" "headless" "$(sed -n '3p' "$tmpdir/argv")"
@@ -396,6 +406,10 @@ assert_eq "run: a fork PR is skipped successfully" 0 "$status"
 assert_contains "run: the fork skip is a notice" "$(cat "$tmpdir/out")" "::notice::"
 assert_contains "run: the fork skip is recorded in the step summary" \
   "$(cat "$tmpdir/step_summary")" "dsh review skipped"
+# The workflow must be able to tell a skip apart from a failure so it does not
+# package a "no output" placeholder for a PR the engine refused to read.
+assert_contains "run: a fork skip reports skipped=true to the workflow" \
+  "$(cat "$tmpdir/run_gh_output")" "skipped=true"
 if [ -s "$tmpdir/argv" ]; then
   bad "run: dsh must not be invoked for a fork PR"
 else
@@ -466,6 +480,16 @@ assert_eq "run: the collected diagnostics no longer contain the GitHub token" 0 
 assert_contains "run: the redaction marker is in stdout and stderr" \
   "$(cat "$log_dir/final.md" "$log_dir/stderr.log" 2>/dev/null)" "***REDACTED***"
 assert_not_contains "run: the workflow log echo is redacted too" "$(cat "$tmpdir/out")" "sk-test"
+
+# Encoded forms: a tool that prints `env | base64` must not survive either.
+b64_key="$(printf '%s' 'sk-test' | base64 | tr -d '\r\n')"
+status="$(run_case test-secret-b64 FAKE_DSH_STDERR="encoded $b64_key")"
+assert_eq "run: a run that echoes a base64-encoded secret succeeds" 0 "$status"
+b64_log="/tmp/dsh-execution-output-test-secret-b64-1-attempt1"
+assert_eq "run: the collected diagnostics no longer contain the base64 form" 0 \
+  "$(grep -rlF "$b64_key" "$b64_log" 2>/dev/null | wc -l | tr -d ' ')"
+assert_contains "run: the base64 form is replaced by the marker" \
+  "$(cat "$b64_log/stderr.log" 2>/dev/null)" "***REDACTED***"
 
 # A failed scrub must never be silent: the file cannot be proven clean, so it is
 # removed from the upload and the failure is announced in the job log.
@@ -722,6 +746,22 @@ for label, text in (("action.yml", action_text), ("workflow", workflow_text)):
         fail(f"{label}: the claude artifact glob is not scoped to ${{ github.run_id }}")
     else:
         ok(f"{label}: the claude artifact glob is scoped to the run")
+
+# --- a dsh fork skip must not become a placeholder review ------------------
+workflow_steps = steps(workflow, r"^  [A-Za-z0-9_-]+:$")
+for step_name in ("Package review output", "Upload review artifact"):
+    body = next((b for _, _, n, b in workflow_steps if n == step_name), None)
+    if body is None or "steps.review_dsh.outputs.skipped != 'true'" not in body:
+        fail(f"workflow: '{step_name}' is not gated on the dsh skip result")
+    else:
+        ok(f"workflow: '{step_name}' is skipped when the dsh engine skips a fork PR")
+
+if "is_fork: ${{ steps.plan.outputs.is_fork }}" not in workflow_text:
+    fail("workflow: the setup job does not expose is_fork")
+elif "needs.setup.outputs.is_fork == 'true'" not in workflow_text:
+    fail("workflow: the summarize job is not gated on the fork status")
+else:
+    ok("workflow: summarize is skipped for a fork PR under dsh")
 
 # --- engine normalization must not drift between the two copies -------------
 # action.yml resolves the engine in bash, the reusable workflow in JavaScript;
