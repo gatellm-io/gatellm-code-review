@@ -28,6 +28,14 @@ if ! is_valid_version "$VERSION"; then
   exit 1
 fi
 
+# npm gets the exact requested spec; comparisons use the normalized form, which
+# drops build metadata (it does not affect version precedence).
+VERSION_KEY="$(normalize_version "$VERSION")"
+[ -n "$VERSION_KEY" ] || {
+  echo "::error::Invalid dsh_version '$VERSION': expected a plain semantic version such as 0.2.2-rc.1."
+  exit 1
+}
+
 SPEC="@deepseek-ai/dsh@$VERSION"
 
 fail_install() {
@@ -56,7 +64,7 @@ else
 fi
 
 # 2) Private prefix under the tool cache.
-PREFIX="$(dsh_tool_cache)/$VERSION"
+PREFIX="$(dsh_tool_cache)/$VERSION_KEY"
 mkdir -p "$PREFIX" || fail_install
 echo "Trying npm install --prefix $PREFIX $SPEC ..."
 if ! npm install --prefix "$PREFIX" "$SPEC"; then
@@ -68,8 +76,8 @@ BIN="$PREFIX/node_modules/.bin/dsh"
 [ -x "$BIN" ] || fail_install
 VER="$(dsh_version_of "$BIN")"
 [ -n "$VER" ] || fail_install
-if [ "$VER" != "$VERSION" ]; then
-  echo "::error::Installed dsh reports version $VER, expected $VERSION."
+if [ "$VER" != "$VERSION_KEY" ]; then
+  echo "::error::Installed dsh reports version $VER, expected $VERSION_KEY."
   fail_install
 fi
 

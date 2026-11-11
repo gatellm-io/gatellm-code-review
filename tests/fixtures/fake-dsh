@@ -17,6 +17,17 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 
+# `--dump-config` is the diagnostic probe run.sh makes before the real turn.
+# Real dsh only prints its resolved config there, so this double must perform
+# none of a run's side effects (stdout body, files, exit code): otherwise a test
+# could pass because of the probe even when the real invocation does nothing.
+for arg in "$@"; do
+  if [ "$arg" = "--dump-config" ]; then
+    printf '%s\n' "${FAKE_DSH_DUMP_CONFIG:-dump-config}"
+    exit "${FAKE_DSH_DUMP_CONFIG_EXIT:-0}"
+  fi
+done
+
 if [ -n "${FAKE_DSH_ARGV_FILE:-}" ]; then
   : > "$FAKE_DSH_ARGV_FILE"
   # The argument count comes first so a multi-line prompt stays countable.

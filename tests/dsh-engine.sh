@@ -135,9 +135,11 @@ assert_eq "detect: matching dsh_version accepted" "$SANDBOX_HOME/.local/bin/dsh"
 assert_eq "detect: mismatched dsh_version rejected" "" "$(detect '9.9.9')"
 assert_contains "detect: mismatch is reported" "$(cat "$tmpdir/out")" "::notice::"
 
-# Build metadata must validate and normalize to the same string.
+# Build metadata must validate; matching ignores it (semver precedence rules),
+# so a preinstalled `1.2.3+build` matches either spelling of the request.
 export FAKE_DSH_VERSION="1.2.3+build"
 assert_eq "detect: build-metadata version accepted" "$SANDBOX_HOME/.local/bin/dsh" "$(detect '1.2.3+build')"
+assert_eq "detect: build-metadata build matches the bare version" "$SANDBOX_HOME/.local/bin/dsh" "$(detect '1.2.3')"
 export FAKE_DSH_VERSION="0.2.2-rc.1"
 
 # --- version grammar (lib.sh) ----------------------------------------------
@@ -150,10 +152,10 @@ assert_eq "lib: build metadata validates" yes "$(version_valid '1.2.3+build')"
 assert_eq "lib: pre-release plus build metadata validates" yes "$(version_valid '1.2.3-rc.1+build.5')"
 assert_eq "lib: junk is rejected" no "$(version_valid '1.2.3 x')"
 assert_eq "lib: npm spec is rejected" no "$(version_valid 'latest')"
-assert_eq "lib: normalize keeps build metadata" "1.2.3+build" "$(version_norm 'dsh 1.2.3+build (abcdef)')"
-assert_eq "lib: normalize keeps pre-release plus build metadata" \
-  "1.2.3-rc.1+build.5" "$(version_norm '1.2.3-rc.1+build.5')"
-assert_eq "lib: a validated version survives normalization" "1.2.3+build" \
+assert_eq "lib: normalize drops build metadata" "1.2.3" "$(version_norm 'dsh 1.2.3+build (abcdef)')"
+assert_eq "lib: normalize drops build metadata after a pre-release" \
+  "1.2.3-rc.1" "$(version_norm '1.2.3-rc.1+build.5')"
+assert_eq "lib: a validated version normalizes to a stable core version" "1.2.3" \
   "$(version_norm "$(version_norm 'v1.2.3+build')")"
 
 # A broken binary must be skipped in favour of a later working one.
@@ -420,6 +422,11 @@ status="$(run_case test-multi MODE=multi OUTPUT_FILE="$outfile" \
 assert_eq "run: multi review succeeds" 0 "$status"
 assert_eq "run: multi review uses the file the model wrote" "REVIEW OUTPUT" "$(cat "$outfile" 2>/dev/null)"
 assert_not_contains "run: the file wins over noisy stdout" "$(cat "$outfile" 2>/dev/null)" "STDOUT NOISE"
+# The body must come from the real invocation, not the --dump-config probe:
+# fake-dsh performs no run side effect during that probe, so the absence of the
+# fallback warning proves the file was written by the review turn itself.
+assert_not_contains "run: the multi body does not come from the stdout fallback" \
+  "$(cat "$tmpdir/out")" "falling back to its stdout"
 
 # Fallback: if the model ignored the instruction, stdout is used but announced.
 rm -f "$outfile"
@@ -450,6 +457,22 @@ assert_eq "run: the collected diagnostics no longer contain the GitHub token" 0 
 assert_contains "run: the redaction marker is in stdout and stderr" \
   "$(cat "$log_dir/final.md" "$log_dir/stderr.log" 2>/dev/null)" "***REDACTED***"
 assert_not_contains "run: the workflow log echo is redacted too" "$(cat "$tmpdir/out")" "sk-test"
+
+# A failed scrub must never be silent: the file cannot be proven clean, so it is
+# removed from the upload and the failure is announced in the job log.
+mkdir -p "$tmpdir/badsed"
+printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badsed/sed"
+chmod +x "$tmpdir/badsed/sed"
+status="$(run_case test-redact-fail PATH="$tmpdir/badsed:$SANDBOX_PATH")"
+assert_eq "run: an unscrubbable diagnostics file does not fail the turn" 0 "$status"
+assert_contains "run: a redaction failure is announced" "$(cat "$tmpdir/out")" "Could not redact credentials"
+bad_log="/tmp/dsh-execution-output-test-redact-fail-1-attempt1"
+if [ -e "$bad_log/stderr.log" ] || [ -e "$bad_log/dump-config.txt" ] || [ -e "$bad_log/final.md" ]; then
+  bad "run: an unscrubbable file must not be left in the upload directory"
+else
+  ok "run: an unscrubbable file is removed before upload"
+fi
+rm -rf "$tmpdir/badsed"
 
 # The isolated harness home must not survive the run.
 assert_eq "run: DSH_HOME is removed on exit" 0 \

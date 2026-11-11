@@ -6,9 +6,12 @@
 
 # The version grammar shared by normalize_version and is_valid_version:
 #   MAJOR.MINOR.PATCH[-PRERELEASE][+BUILDMETA]
-# Keep the two in sync: a version that validates must also survive
-# normalization unchanged (and vice versa).
-# Written with a `[+]` class because a bare `+` is a regex quantifier.
+# Both accept build metadata. Normalization then *drops* it, because semver
+# defines build metadata as not taking part in version precedence: for matching
+# purposes `1.2.3+build` and `1.2.3` are the same version, and comparing raw
+# strings would make a preinstalled `1.2.3+build` miss an exact `1.2.3` request
+# (and vice versa). So a version that validates always normalizes to the same
+# core version with or without its build suffix.
 
 # Extract the first semantic version from arbitrary `--version` output.
 # Prints nothing when the input contains no version.
@@ -19,7 +22,7 @@ normalize_version() {
   [ -n "$raw" ] || return 0
   printf '%s\n' "$raw" \
     | tr -d '\r' \
-    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?([+][0-9A-Za-z.]+)?' \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' \
     | head -n 1
 }
 
@@ -67,6 +70,15 @@ dsh_candidates() {
 find_dsh() {
   local expected="${1:-}"
   local candidate ver
+  if [ -n "$expected" ]; then
+    # Compare on the normalized form: build metadata does not affect version
+    # precedence, so `1.2.3+build` and `1.2.3` are the same version.
+    expected="$(normalize_version "$expected")"
+    if [ -z "$expected" ]; then
+      echo "::warning::Could not parse the expected dsh version; no candidate can match it." >&2
+      return 1
+    fi
+  fi
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     [ -x "$candidate" ] || continue
@@ -86,8 +98,8 @@ find_dsh() {
 }
 
 # Reject anything that is not a plain semver, so a caller-supplied value can
-# never turn into an arbitrary npm spec (or a shell word). Accepts the same
-# grammar as normalize_version, including build metadata (`1.2.3+build`).
+# never turn into an arbitrary npm spec (or a shell word). Accepts build
+# metadata (`1.2.3+build`); normalize_version then drops it for comparison.
 is_valid_version() {
   case "$1" in
     '' | *[!0-9A-Za-z.+-]*) return 1 ;;

@@ -171,17 +171,38 @@ fi
 # `stderr.log` and the session transcript are written by tools we do not
 # control, so scrub the literal secret values before the upload step can ship
 # them; artifacts are readable by anyone with repository read access.
+#
+# Fail closed: if a file cannot be scrubbed, drop it instead of uploading it
+# unscrubbed. Silently ignoring a failed scrub here would ship the raw key and
+# token to anyone with repository read access, so every failure is announced.
 redact_secrets() {
-  local dir="$1" file secret escaped
+  local dir="$1" file secret escaped tmp failed
   while IFS= read -r file; do
     [ -f "$file" ] || continue
+    failed=0
+    tmp=""
     for secret in "${ANTHROPIC_API_KEY:-}" "${GATELLM_REVIEW_API_KEY:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"; do
       [ -n "$secret" ] || continue
       # Escape sed's regex metacharacters so the secret is matched literally.
-      escaped="$(printf '%s' "$secret" | sed 's/[][\\.*^$|&/]/\\&/g')"
-      sed -i.bak "s/$escaped/***REDACTED***/g" "$file" 2>/dev/null || true
-      rm -f "$file.bak"
+      if ! escaped="$(printf '%s' "$secret" | sed 's/[][\\.*^$|&/]/\\&/g')"; then
+        failed=1
+        break
+      fi
+      tmp="$file.redacting"
+      if ! sed "s/$escaped/***REDACTED***/g" "$file" > "$tmp" 2>/dev/null ||
+        ! mv "$tmp" "$file" 2>/dev/null; then
+        failed=1
+        break
+      fi
     done
+    if [ "$failed" -ne 0 ]; then
+      rm -f "$tmp" 2>/dev/null || true
+      if rm -f "$file" 2>/dev/null && [ ! -e "$file" ]; then
+        echo "::warning::Could not redact credentials from '$file'; removed it from the uploaded diagnostics."
+      else
+        echo "::error::Could not redact or remove '$file'; it may still contain the gateway key or GitHub token and will be uploaded."
+      fi
+    fi
   done < <(find "$dir" -type f 2>/dev/null)
   return 0
 }
