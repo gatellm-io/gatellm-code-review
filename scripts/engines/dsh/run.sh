@@ -161,11 +161,15 @@ export DSH_PERMISSION_MODE=danger-full-access
 # The generated patch references this variable by name; the value never touches disk.
 export GATELLM_REVIEW_API_KEY="${ANTHROPIC_API_KEY:-}"
 
-# Bound both invocations so a stalled turn cannot pin a self-hosted runner until
-# the job's default timeout (6 hours on GitHub-hosted). GNU coreutils `timeout`
-# is used when present (`gtimeout` from Homebrew); a runner with neither runs
-# unbounded, and the job-level timeout still bounds it. Both values are
-# env-overridable but must be a positive integer.
+# Bound both invocations so a stalled turn cannot pin a self-hosted runner. GNU
+# coreutils `timeout` is used when present (`gtimeout` from Homebrew). It is
+# given `-k` when it supports it, so a process that ignores SIGTERM — an agent
+# CLI with a wedged cleanup handler, say — is still SIGKILLed after a short
+# grace period instead of outliving the limit. A runner with neither command
+# runs unbounded: GitHub's default job timeout (360 minutes) then applies, and
+# a self-hosted runner's configured timeout may be longer, so install coreutils
+# if a hard bound matters. All three values are env-overridable but must be a
+# positive integer.
 timeout_seconds() { # value default
   case "${1:-}" in
     '' | *[!0-9]* | 0) printf '%s' "$2" ;;
@@ -174,19 +178,28 @@ timeout_seconds() { # value default
 }
 TURN_TIMEOUT="$(timeout_seconds "${DSH_TURN_TIMEOUT:-}" 3600)"
 PROBE_TIMEOUT="$(timeout_seconds "${DSH_PROBE_TIMEOUT:-}" 120)"
+KILL_AFTER="$(timeout_seconds "${DSH_KILL_AFTER:-}" 30)"
 TIMEOUT_BIN=""
 if command -v timeout >/dev/null 2>&1; then
   TIMEOUT_BIN=timeout
 elif command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_BIN=gtimeout
 fi
+# `-k` is not universal (some BusyBox builds lack it); probe once rather than
+# assume, so an unsupported flag never turns every run into a usage error.
+TIMEOUT_HAS_KILL=0
+if [ -n "$TIMEOUT_BIN" ] && "$TIMEOUT_BIN" -k 1 1 true >/dev/null 2>&1; then
+  TIMEOUT_HAS_KILL=1
+fi
 run_with_timeout() { # seconds command...
   local limit="$1"
   shift
-  if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" "$limit" "$@"
-  else
+  if [ -z "$TIMEOUT_BIN" ]; then
     "$@"
+  elif [ "$TIMEOUT_HAS_KILL" -eq 1 ]; then
+    "$TIMEOUT_BIN" -k "$KILL_AFTER" "$limit" "$@"
+  else
+    "$TIMEOUT_BIN" "$limit" "$@"
   fi
 }
 

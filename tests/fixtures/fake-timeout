@@ -1,13 +1,27 @@
 #!/usr/bin/env bash
 # Test double for GNU `timeout`: records the invocation, then runs the command.
 #
+# Understands `timeout [-k KILL] SECONDS COMMAND [args...]`, so the wrapper's
+# `-k` capability probe and the real calls both work.
+#
 # Environment:
-#   FAKE_TIMEOUT_LOG  one line per invocation: "timeout <seconds> <command name>"
+#   FAKE_TIMEOUT_LOG  one line per invocation:
+#                     "timeout <seconds> kill=<kill|none> <command name>"
 #                     (the full argv is not logged: a prompt argument can span
 #                     many lines, which would make call counting unreliable)
 set -u
 
-printf 'timeout %s %s\n' "${1:-}" "${2##*/}" >> "${FAKE_TIMEOUT_LOG:-/dev/null}"
-# Invocation shape: timeout <seconds> <command> [args...]
-shift
+kill_after=""
+if [ "${1:-}" = "-k" ]; then
+  kill_after="${2:-}"
+  shift
+  shift
+fi
+limit="${1:-}"
+if [ $# -gt 0 ]; then
+  shift
+fi
+command_name="${1##*/}"
+printf 'timeout %s kill=%s %s\n' "$limit" "${kill_after:-none}" "$command_name" \
+  >> "${FAKE_TIMEOUT_LOG:-/dev/null}"
 exec "$@"

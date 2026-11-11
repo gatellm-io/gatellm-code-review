@@ -208,43 +208,68 @@ jobs:
             // — 2) Fork status, without an API call when the event carries it —
             // run.sh refuses to run the dsh engine on a fork PR, and the
             // summarize job needs the same fact so a multi-model run made
-            // entirely of skipped legs ends in a clean skip instead of a "no
-            // output" failure. A `pull_request` payload carries the head repo;
-            // an `issue_comment` payload does not and is refined from the API
-            // below. Leaving it empty means "not a fork", which is exactly the
-            // pre-dsh behavior on the paths that never fetched the PR.
+            // entirely of skipped legs ends in a clean skip instead of running
+            // with zero artifacts. A `pull_request` payload carries the head
+            // repo; an `issue_comment` payload does not, so that case is filled
+            // from the API below — best effort on the early-return paths, so
+            // they gain no hard dependency, and required on the size-check path
+            // that fetches the PR anyway.
             const baseFullName = `${context.repo.owner}/${context.repo.repo}`;
+            const forkOf = (head) => String(!head?.repo || head.repo.full_name !== baseFullName);
             const payloadPr = context.payload.pull_request;
             if (payloadPr) {
               // A null head repo means the fork was deleted: treat it as a fork.
-              const isFork = !payloadPr.head?.repo || payloadPr.head.repo.full_name !== baseFullName;
+              const isFork = forkOf(payloadPr.head);
               core.setOutput('is_fork', String(isFork));
               core.info(`PR head repo: ${payloadPr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
             }
 
+            const fetchPr = async () => {
+              const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+              const { data } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              return data;
+            };
+            // Best effort: on the early-return paths a failure here must not
+            // fail setup, so an unresolvable status stays empty ("not a fork")
+            // exactly as it did before the dsh engine existed.
+            const fillForkFromApi = async () => {
+              try {
+                const pr = await fetchPr();
+                const isFork = forkOf(pr.head);
+                core.setOutput('is_fork', String(isFork));
+                core.info(`PR head repo: ${pr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
+              } catch (error) {
+                core.info(`Could not resolve the PR's head repository (${error.message}); leaving is_fork unset.`);
+              }
+            };
+
             // — 3) PR size check (skip if run_attempt>1; disabled if max_lines=-1) —
-            // The PR fetch stays behind these early returns: neither a manual
-            // rerun nor `max_lines: -1` should gain a hard dependency on it.
+            // The size check's PR fetch stays behind these early returns: neither
+            // a manual rerun nor `max_lines: -1` gains a hard dependency on it.
+            // The fork lookup is still filled best-effort so a dsh fork PR does
+            // not reach summarize with zero artifacts (issue_comment has no
+            // head repo in its payload).
             const runAttempt = parseInt('${{ github.run_attempt }}');
             if (runAttempt > 1) {
               core.info(`Manual rerun detected (attempt ${runAttempt}), skipping size check.`);
               core.setOutput('too_large', 'false');
+              if (!payloadPr) await fillForkFromApi();
               return;
             }
             const maxLines = parseInt('${{ inputs.max_lines }}');
             if (maxLines === -1) {
               core.info('Size check disabled (max_lines=-1), skipping.');
               core.setOutput('too_large', 'false');
+              if (!payloadPr) await fillForkFromApi();
               return;
             }
-            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
+            const pr = await fetchPr();
             // Authoritative for issue_comment too, where the payload has no head repo.
-            const isFork = !pr.head?.repo || pr.head.repo.full_name !== baseFullName;
+            const isFork = forkOf(pr.head);
             core.setOutput('is_fork', String(isFork));
             core.info(`PR head repo: ${pr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
             const totalLines = pr.additions + pr.deletions;
@@ -524,6 +549,15 @@ jobs:
       # The dsh engine needs this repository's scripts. The reusable workflow
       # does not get them from the caller's checkout, so fetch its own source
       # at the commit that defines this job. Only `scripts/` is needed.
+      #
+      # `job.workflow_repository` / `job.workflow_sha` are documented `job`
+      # context members (verified against the GitHub Actions contexts reference
+      # on 2026-11-11; `job.workflow_ref` and `job.workflow_file_path` are the
+      # other two). They are unavailable on GHES, so the dsh engine cannot run
+      # there. The checkout uses the caller's default `github.token`, which can
+      # read this public repository; a private copy cannot be fetched, so the
+      # dsh engine requires a public copy. A failure here fails the job — there
+      # is no silent fallback.
       - name: Checkout gatellm-code-review scripts
         if: matrix.engine == 'dsh'
         uses: actions/checkout@v7
@@ -835,7 +869,11 @@ jobs:
           echo "Collected $COUNT review file(s):"
           ls -la ./claude-reviews/ || true
           if [ "$COUNT" -eq 0 ]; then
-            echo "::error::All review jobs produced no output; skipping summary comment."
+            # For the dsh engine this is also what a fork PR looks like when the
+            # setup job could not resolve the fork status (e.g. an issue_comment
+            # rerun whose API lookup failed): every leg skipped on purpose, so
+            # say that instead of leaving a bare "no output" failure.
+            echo "::error::All review jobs produced no output; skipping summary comment. If this is a fork PR reviewed by the dsh engine, the review legs skip by design and this failure is expected."
             exit 1
           fi
           echo "count=$COUNT" >> $GITHUB_OUTPUT
@@ -977,6 +1015,10 @@ jobs:
           echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
           echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
+      # Same source checkout as the review job: `job.workflow_repository` /
+      # `job.workflow_sha` are documented `job` context members (verified
+      # 2026-11-11), unavailable on GHES, and read with the caller's default
+      # `github.token`, so a public copy of this repository is required.
       - name: Checkout gatellm-code-review scripts
         if: needs.setup.outputs.engine == 'dsh'
         uses: actions/checkout@v7

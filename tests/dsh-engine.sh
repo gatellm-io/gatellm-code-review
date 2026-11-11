@@ -68,8 +68,10 @@ done
 # the calls it does not fail deliberately, and must not assume /usr/bin/sed.
 REAL_SED="$(command -v sed)"
 mkdir -p "$tmpdir/tools" "$tmpdir/bin" "$tmpdir/home" "$tmpdir/workspace" "$tmpdir/empty"
-for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find base64 fold seq; do
-  src="$(command -v "$tool" 2>/dev/null || true)"
+for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find base64 fold seq true; do
+  # `type -P` forces a PATH lookup: `command -v true` would return the shell
+  # builtin's name, and a symlink to that is broken.
+  src="$(type -P "$tool" 2>/dev/null || true)"
   [ -n "$src" ] && ln -sf "$src" "$tmpdir/tools/$tool"
 done
 ln -sf "$FIXTURES/fake-gh" "$tmpdir/bin/gh"
@@ -405,26 +407,35 @@ status="$(run_case test-fail FAKE_DSH_EXIT=3)"
 assert_eq "run: a failed turn keeps dsh's exit code" 3 "$status"
 
 # A stalled turn must not pin a self-hosted runner: both invocations go through
-# `timeout` when the runner has it (the test double records each call).
+# `timeout` when the runner has it (the test double records each call). `-k` is
+# passed too, so a process that ignores SIGTERM is still killed.
 : > "$tmpdir/timeout.log"
 status="$(run_case test-timeout FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
 assert_eq "run: a timeout-wrapped run succeeds" 0 "$status"
 assert_eq "run: the probe and the turn both go through timeout" 2 \
-  "$(wc -l < "$tmpdir/timeout.log" | tr -d ' ')"
-assert_contains "run: the probe uses the short timeout" "$(sed -n '1p' "$tmpdir/timeout.log")" "timeout 120 fake-dsh"
-assert_contains "run: the turn uses the long timeout" "$(sed -n '2p' "$tmpdir/timeout.log")" "timeout 3600 fake-dsh"
+  "$(grep -c 'fake-dsh' "$tmpdir/timeout.log" || true)"
+assert_contains "run: the probe uses the short timeout" \
+  "$(grep 'fake-dsh' "$tmpdir/timeout.log" | sed -n '1p')" "timeout 120 kill=30 fake-dsh"
+assert_contains "run: the turn uses the long timeout" \
+  "$(grep 'fake-dsh' "$tmpdir/timeout.log" | sed -n '2p')" "timeout 3600 kill=30 fake-dsh"
 
 : > "$tmpdir/timeout.log"
 status="$(run_case test-timeout-custom DSH_TURN_TIMEOUT=42 FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
 assert_eq "run: a custom turn timeout still succeeds" 0 "$status"
 assert_contains "run: DSH_TURN_TIMEOUT overrides the turn timeout" \
-  "$(sed -n '2p' "$tmpdir/timeout.log")" "timeout 42 fake-dsh"
+  "$(grep 'fake-dsh' "$tmpdir/timeout.log" | sed -n '2p')" "timeout 42 kill=30 fake-dsh"
+
+: > "$tmpdir/timeout.log"
+status="$(run_case test-timeout-kill DSH_KILL_AFTER=5 FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
+assert_eq "run: a custom kill grace still succeeds" 0 "$status"
+assert_contains "run: DSH_KILL_AFTER overrides the SIGKILL grace" \
+  "$(grep 'fake-dsh' "$tmpdir/timeout.log" | sed -n '2p')" "kill=5 fake-dsh"
 
 : > "$tmpdir/timeout.log"
 status="$(run_case test-timeout-invalid DSH_TURN_TIMEOUT=abc FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
 assert_eq "run: an invalid turn timeout still succeeds" 0 "$status"
 assert_contains "run: an invalid DSH_TURN_TIMEOUT falls back to the default" \
-  "$(sed -n '2p' "$tmpdir/timeout.log")" "timeout 3600 fake-dsh"
+  "$(grep 'fake-dsh' "$tmpdir/timeout.log" | sed -n '2p')" "timeout 3600 kill=30 fake-dsh"
 
 # The --dump-config probe is diagnostic only: its body is collected, and a
 # failing probe must not change the turn's outcome.
@@ -840,6 +851,16 @@ elif "needs.setup.outputs.is_fork == 'true'" not in workflow_text:
     fail("workflow: the summarize job is not gated on the fork status")
 else:
     ok("workflow: summarize is skipped for a fork PR under dsh")
+
+# The early-return paths must still fill is_fork (issue_comment payloads have no
+# head repo), or a dsh fork PR reaches summarize with zero artifacts.
+fills = workflow_text.count("await fillForkFromApi();")
+if fills != 2:
+    fail(f"workflow: expected both early-return paths to fill is_fork, found {fills}")
+elif "leaving is_fork unset" not in workflow_text:
+    fail("workflow: the best-effort fork lookup is not guarded by a catch")
+else:
+    ok("workflow: both early-return paths fill is_fork best-effort")
 
 # --- dsh diagnostics are cleaned up only after the upload ------------------
 # A reused self-hosted runner must not accumulate one session transcript per run.
