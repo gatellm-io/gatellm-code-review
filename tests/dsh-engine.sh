@@ -491,10 +491,25 @@ assert_eq "run: the collected diagnostics no longer contain the base64 form" 0 \
 assert_contains "run: the base64 form is replaced by the marker" \
   "$(cat "$b64_log/stderr.log" 2>/dev/null)" "***REDACTED***"
 
+# GNU base64 wraps at 76 columns; each wrapped line must still be scrubbed.
+long_key="sk-ant-$(printf 'a%.0s' $(seq 1 120))"
+wrapped="$(printf '%s' "$long_key" | base64 | fold -w 76)"
+status="$(run_case test-secret-wrap ANTHROPIC_API_KEY="$long_key" FAKE_DSH_STDERR="$wrapped")"
+assert_eq "run: a run that echoes a wrapped base64 secret succeeds" 0 "$status"
+wrap_log="/tmp/dsh-execution-output-test-secret-wrap-1-attempt1"
+wrap_first="$(printf '%s\n' "$wrapped" | head -1)"
+assert_eq "run: the wrapped base64 form no longer leaks" 0 \
+  "$(grep -rlF "$wrap_first" "$wrap_log" 2>/dev/null | wc -l | tr -d ' ')"
+assert_contains "run: the wrapped base64 form is replaced by the marker" \
+  "$(cat "$wrap_log/stderr.log" 2>/dev/null)" "***REDACTED***"
+
 # A failed scrub must never be silent: the file cannot be proven clean, so it is
-# removed from the upload and the failure is announced in the job log.
+# removed from the upload and the failure is announced in the job log. The fake
+# sed fails only the rewrite pass (the escape pass has no -e), so the per-file
+# path is exercised rather than the pattern-derivation one.
 mkdir -p "$tmpdir/badsed"
-printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badsed/sed"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-e" ] && exit 1; done\nexec /usr/bin/sed "$@"\n' \
+  > "$tmpdir/badsed/sed"
 chmod +x "$tmpdir/badsed/sed"
 status="$(run_case test-redact-fail PATH="$tmpdir/badsed:$SANDBOX_PATH")"
 assert_eq "run: an unscrubbable diagnostics file does not fail the turn" 0 "$status"
@@ -510,7 +525,8 @@ rm -rf "$tmpdir/badsed"
 # If a file can be neither scrubbed nor deleted, nothing at all is published:
 # the upload directory stays empty instead of shipping the unscrubbed file.
 mkdir -p "$tmpdir/badboth"
-printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badboth/sed"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-e" ] && exit 1; done\nexec /usr/bin/sed "$@"\n' \
+  > "$tmpdir/badboth/sed"
 printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badboth/rm"
 chmod +x "$tmpdir/badboth/sed" "$tmpdir/badboth/rm"
 status="$(run_case test-redact-blocked PATH="$tmpdir/badboth:$SANDBOX_PATH")"

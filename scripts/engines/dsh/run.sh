@@ -202,59 +202,100 @@ fi
 # Every failure is announced rather than silently ignored.
 #
 # The variants below are the encodings a log can realistically record instead of
-# the literal value: base64 in both alphabets, padded and unpadded. The
-# credential formats in use are alphanumeric plus `-`/`_`, so JSON escaping and
+# the literal value: base64 in both alphabets, padded and unpadded, plus every
+# 76-character chunk of those forms -- GNU `base64` wraps its output at 76
+# columns, and each wrapped line is one such chunk verbatim. The credential
+# formats in use are alphanumeric plus `-`/`_`, so JSON escaping and
 # URL-encoding leave them byte-identical and add nothing. Anything that
-# transforms them further (compression, reversal, wrapping across lines) is out
-# of scope -- this scrubber is defence-in-depth hygiene, not the security
-# boundary; the fork guard is what keeps untrusted PR content away from the
-# credentials.
+# transforms them further (compression, reversal, a custom wrap width) is out of
+# scope -- this scrubber is defence-in-depth hygiene, not the security boundary;
+# the fork guard is what keeps untrusted PR content away from the credentials.
 secret_variants() { # secret
-  local secret="$1" b64
+  local secret="$1" b64 url rest chunk
   printf '%s\n' "$secret"
   command -v base64 >/dev/null 2>&1 || return 1
-  # GNU base64 wraps at 76 columns, BSD does not; strip the newlines so the
-  # unwrapped form is what we match.
+  # Strip newlines so the unwrapped form is what we match first; the wrapped
+  # form is covered by the 76-column chunks below.
   b64="$(printf '%s' "$secret" | base64 2>/dev/null | tr -d '\r\n')" || return 1
   [ -n "$b64" ] || return 1
+  url="$(printf '%s' "$b64" | tr '+/' '-_')" || return 1
   printf '%s\n' "$b64"
   printf '%s\n' "${b64%%=*}"
-  printf '%s\n' "$(printf '%s' "$b64" | tr '+/' '-_')"
-  printf '%s\n' "$(printf '%s' "$b64" | tr '+/' '-_' | sed 's/=*$//')"
+  printf '%s\n' "$url"
+  printf '%s\n' "$(printf '%s' "$url" | sed 's/=*$//')"
+  for rest in "$b64" "$url"; do
+    while [ -n "$rest" ]; do
+      chunk="${rest:0:76}"
+      # A very short remainder would match unrelated text in the log; leaving it
+      # behind is harmless because it is only a fragment of the encoded value.
+      if [ "${#chunk}" -ge 8 ]; then
+        printf '%s\n' "$chunk"
+      fi
+      [ "${#rest}" -gt 76 ] || break
+      rest="${rest:76}"
+    done
+  done
 }
 
 redact_secrets() {
-  local dir="$1" file secret variants variant escaped tmp failed
+  local dir="$1" file s variants variant escaped tmp p dup
+  local secret_list=""
+  local -a patterns sed_args
+  patterns=()
+
+  # Build the sed program once for the whole run: variants are per-secret, not
+  # per-file. GATELLM_REVIEW_API_KEY mirrors ANTHROPIC_API_KEY and GH_TOKEN
+  # usually equals GITHUB_TOKEN, so each distinct value is scrubbed once.
+  for s in "${ANTHROPIC_API_KEY:-}" "${GATELLM_REVIEW_API_KEY:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"; do
+    [ -n "$s" ] || continue
+    case "|$secret_list|" in
+      *"|$s|"*) continue ;;
+    esac
+    secret_list="$secret_list|$s"
+    # A secret whose variants cannot be derived is not scrubbed at all: fail
+    # closed for the whole upload rather than ship a partial match.
+    if ! variants="$(secret_variants "$s")"; then
+      PUBLISH_BLOCKED=1
+      echo "::error::Could not redact credentials: failed to derive the scrubber patterns; withholding all dsh diagnostics from the upload rather than risk shipping a credential."
+      return 0
+    fi
+    while IFS= read -r variant; do
+      [ -n "$variant" ] || continue
+      # Escape sed's regex metacharacters so the variant is matched literally.
+      if ! escaped="$(printf '%s' "$variant" | sed 's/[][\\.*^$|&/]/\\&/g')"; then
+        PUBLISH_BLOCKED=1
+        echo "::error::Could not redact credentials: failed to escape a scrubber pattern; withholding all dsh diagnostics from the upload rather than risk shipping a credential."
+        return 0
+      fi
+      dup=0
+      if [ "${#patterns[@]}" -gt 0 ]; then
+        for p in "${patterns[@]}"; do
+          if [ "$p" = "$escaped" ]; then
+            dup=1
+            break
+          fi
+        done
+      fi
+      if [ "$dup" -eq 0 ]; then
+        patterns+=("$escaped")
+      fi
+    done <<< "$variants"
+  done
+
+  if [ "${#patterns[@]}" -eq 0 ]; then
+    return 0
+  fi
+  sed_args=()
+  for p in "${patterns[@]}"; do
+    sed_args+=(-e "s/$p/***REDACTED***/g")
+  done
+
   while IFS= read -r file; do
     [ -f "$file" ] || continue
-    failed=0
-    tmp=""
-    for secret in "${ANTHROPIC_API_KEY:-}" "${GATELLM_REVIEW_API_KEY:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"; do
-      [ -n "$secret" ] || continue
-      # A secret whose variants cannot be derived is not scrubbed: treat that
-      # like any other scrub failure below rather than silently matching only
-      # part of it.
-      if ! variants="$(secret_variants "$secret")"; then
-        failed=1
-        break
-      fi
-      while IFS= read -r variant; do
-        [ -n "$variant" ] || continue
-        # Escape sed's regex metacharacters so the variant is matched literally.
-        if ! escaped="$(printf '%s' "$variant" | sed 's/[][\\.*^$|&/]/\\&/g')"; then
-          failed=1
-          break 2
-        fi
-        tmp="$file.redacting"
-        if ! sed "s/$escaped/***REDACTED***/g" "$file" > "$tmp" 2>/dev/null ||
-          ! mv "$tmp" "$file" 2>/dev/null; then
-          failed=1
-          break 2
-        fi
-      done <<< "$variants"
-      [ "$failed" -eq 0 ] || break
-    done
-    if [ "$failed" -ne 0 ]; then
+    tmp="$file.redacting"
+    # One read/write per file, however many secrets and variants are in play.
+    if ! sed "${sed_args[@]}" "$file" > "$tmp" 2>/dev/null ||
+      ! mv "$tmp" "$file" 2>/dev/null; then
       rm -f "$tmp" 2>/dev/null || true
       if rm -f "$file" 2>/dev/null && [ ! -e "$file" ]; then
         echo "::warning::Could not redact credentials from '$file'; removed it from the uploaded diagnostics."
