@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Test double for `gh pr view <n> --repo <r> --json isCrossRepository --jq ...`.
+#
+# Environment:
+#   FAKE_GH_CROSS_REPO  printed on success (true | false)
+#   FAKE_GH_EXIT        exit code (default: 0)
+set -u
+
+printf 'gh %s\n' "$*" >> "${FAKE_GH_LOG:-/dev/null}"
+if [ "${FAKE_GH_EXIT:-0}" != "0" ]; then
+  echo "gh: not authenticated" >&2
+  exit "${FAKE_GH_EXIT}"
+fi
+printf '%s\n' "${FAKE_GH_CROSS_REPO:-false}"

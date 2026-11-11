@@ -26,6 +26,10 @@ jobs:
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
 
+      # — Engine (applies to review and summarize) —
+      # engine: claude-code    # default; the other option is dsh (DeepSeek Harness)
+      # dsh_version: ""        # Empty reuses any preinstalled dsh, else installs the pinned default
+
       # — Single-model mode (default) —
       # Leave `models` empty; uses `model` for single-model review, output is posted directly as a PR comment
       # model: deepseek-v4-pro

@@ -1,5 +1,5 @@
 name: "Claude Auto Review"
-description: "Pull request auto review powered by Claude Code. Wraps anthropics/claude-code-action with size gating and comment minimization."
+description: "Pull request auto review powered by Claude Code or dsh (DeepSeek Harness). Wraps anthropics/claude-code-action or the dsh CLI with size gating and comment minimization."
 branding:
   icon: "eye"
   color: "purple"
@@ -18,7 +18,15 @@ inputs:
     required: false
     default: ${{ github.token }}
   model:
-    description: "Model name (REQUIRED in practice). Caller MUST pass vars.CODE_REVIEW_MODEL or a literal; empty triggers fail-fast. The [1m] suffix denotes a 1M-token context-window variant, recommended for large PRs."
+    description: "Model name (REQUIRED in practice). Caller MUST pass vars.CODE_REVIEW_MODEL or a literal; empty triggers fail-fast. The [1m] suffix denotes a 1M-token context-window variant, recommended for large PRs; it is stripped before the name reaches the dsh engine."
+    required: false
+    default: ""
+  engine:
+    description: "Review engine: 'claude-code' (default) or 'dsh' (DeepSeek Harness). Surrounding whitespace and case are normalized; any other value fails the job."
+    required: false
+    default: "claude-code"
+  dsh_version:
+    description: "Exact dsh CLI version to use. Empty (the default) reuses any preinstalled dsh and installs the pinned default when none is found; an explicit version must match exactly or the preinstalled copy is ignored and that version is installed."
     required: false
     default: ""
   max_lines:
@@ -129,6 +137,36 @@ runs:
           exit 1
         fi
         echo "Using model: $MODEL"
+
+    - name: Resolve review engine
+      id: engine
+      shell: bash
+      env:
+        # Passed via env, never interpolated into the script (command-injection guard).
+        INPUT_ENGINE: ${{ inputs.engine }}
+      run: |
+        # Strip CR/LF before echoing a raw value into a workflow command, so an
+        # embedded newline cannot inject an extra ::command:: line into the log.
+        sanitize() {
+          local v="$1"
+          v="${v//$'\r'/ }"
+          v="${v//$'\n'/ }"
+          printf '%s' "$v"
+        }
+        ENGINE="$(printf '%s' "$INPUT_ENGINE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        if [ -z "$ENGINE" ]; then
+          ENGINE=claude-code
+          echo "engine input is empty; defaulting to claude-code"
+        fi
+        case "$ENGINE" in
+          claude-code|dsh) ;;
+          *)
+            echo "::error::Unsupported engine '$(sanitize "$INPUT_ENGINE")'. Expected 'claude-code' or 'dsh'."
+            exit 1
+            ;;
+        esac
+        echo "engine=${ENGINE}" >> "$GITHUB_OUTPUT"
+        echo "Using engine: ${ENGINE}"
 
     - name: Check PR size
       id: check
@@ -289,7 +327,10 @@ runs:
           const claudeComments = comments.filter(
             (c) =>
               c.user.login.toLowerCase().includes('claude') ||
-              (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
+              (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')) ||
+              // Comments posted by the dsh engine carry a hidden marker; fold them
+              // too so switching engines does not accumulate stale reviews.
+              (c.user.login === 'github-actions[bot]' && c.body.includes('<!-- gatellm-code-review')),
           );
           for (const comment of claudeComments) {
             await github.graphql(
@@ -312,7 +353,7 @@ runs:
           }
 
     - name: Detect Claude CLI path
-      if: steps.check.outputs.too_large != 'true'
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'claude-code'
       id: detect
       shell: bash
       run: |
@@ -340,7 +381,7 @@ runs:
         fi
 
     - name: Install Claude CLI if missing
-      if: steps.check.outputs.too_large != 'true' && steps.detect.outputs.claude_path == ''
+      if: steps.check.outputs.too_large != 'true' && steps.detect.outputs.claude_path == '' && steps.engine.outputs.engine == 'claude-code'
       id: install
       shell: bash
       run: |
@@ -397,7 +438,7 @@ runs:
         echo "Installed Claude CLI at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
 
     - name: Resolve Claude CLI path
-      if: steps.check.outputs.too_large != 'true'
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'claude-code'
       id: resolve
       shell: bash
       run: |
@@ -409,9 +450,57 @@ runs:
         echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
         echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
+    - name: Check Node.js for dsh
+      id: dsh_node
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'dsh'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/scripts/engines/dsh/check-node.sh"
+
+    - name: Set up Node.js 24 for dsh
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'dsh' && steps.dsh_node.outputs.node_ok != 'true'
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    - name: Detect dsh CLI path
+      id: dsh_detect
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'dsh'
+      shell: bash
+      env:
+        DSH_VERSION: ${{ inputs.dsh_version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/engines/dsh/detect.sh"
+
+    - name: Install dsh CLI if missing
+      id: dsh_install
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'dsh' && steps.dsh_detect.outputs.dsh_path == ''
+      shell: bash
+      env:
+        DSH_VERSION: ${{ inputs.dsh_version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/engines/dsh/install.sh"
+
+    - name: Run dsh review
+      id: review_dsh
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'dsh'
+      shell: bash
+      env:
+        ROLE: review
+        MODE: single
+        MODEL: ${{ inputs.model }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        USER_REQUEST: ${{ inputs.user_request }}
+        REVIEW_LANGUAGE: ${{ inputs.review_language || 'English' }}
+        REVIEW_PROMPT: ${{ inputs.prompt }}
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        DSH_BIN: ${{ steps.dsh_detect.outputs.dsh_path || steps.dsh_install.outputs.dsh_path }}
+        LOG_SLUG: review
+      run: bash "$GITHUB_ACTION_PATH/scripts/engines/dsh/run.sh"
+
     - name: Automatic PR Review
       id: review_1
-      if: steps.check.outputs.too_large != 'true'
+      if: steps.check.outputs.too_large != 'true' && steps.engine.outputs.engine == 'claude-code'
       uses: anthropics/claude-code-action@v1
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
@@ -483,7 +572,9 @@ runs:
       uses: actions/upload-artifact@v7
       with:
         name: claude-exec-log
-        path: /tmp/claude-execution-output-*.json
+        path: |
+          /tmp/claude-execution-output-*.json
+          /tmp/dsh-execution-output-*
         retention-days: 1
         overwrite: true
         if-no-files-found: ignore

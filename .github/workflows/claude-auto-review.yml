@@ -22,6 +22,16 @@ on:
         required: false
         type: string
         default: ${{ vars.CODE_REVIEW_SUMMARY_MODEL }}
+      engine:
+        description: "Review engine: 'claude-code' (default) or 'dsh' (DeepSeek Harness). Applied to both the review and the summarize jobs. Surrounding whitespace and case are normalized; any other value fails the setup job."
+        required: false
+        type: string
+        default: ${{ vars.CODE_REVIEW_ENGINE }}
+      dsh_version:
+        description: "Exact dsh CLI version to use. Empty (the default) reuses any preinstalled dsh and installs the pinned default when none is found; an explicit version must match exactly or the preinstalled copy is ignored and that version is installed."
+        required: false
+        type: string
+        default: ""
       max_lines:
         description: "Max PR changed lines; skip review if exceeded (-1 means unlimited, default 10000)"
         required: false
@@ -134,17 +144,36 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    env:
+      # Read via process.env rather than template interpolation, so a crafted
+      # input cannot break out of the script literal.
+      ENGINE_INPUT: ${{ inputs.engine }}
     outputs:
       too_large: ${{ steps.plan.outputs.too_large }}
       mode: ${{ steps.plan.outputs.mode }}
       matrix: ${{ steps.plan.outputs.matrix }}
       summary_model: ${{ steps.plan.outputs.summary_model }}
+      engine: ${{ steps.plan.outputs.engine }}
     steps:
       - name: Resolve model matrix & check PR size
         id: plan
         uses: actions/github-script@v9
         with:
           script: |
+            // — 0) Review engine (normalized here so every downstream job agrees) —
+            const rawEngine = (process.env.ENGINE_INPUT || '').replace(/\s+/g, '').toLowerCase();
+            const engine = rawEngine || 'claude-code';
+            if (!['claude-code', 'dsh'].includes(engine)) {
+              const shown = (process.env.ENGINE_INPUT || '').replace(/[\r\n]+/g, ' ');
+              core.setFailed(`Unsupported engine '${shown}'. Expected 'claude-code' or 'dsh'.`);
+              return;
+            }
+            core.setOutput('engine', engine);
+            core.info(`Resolved engine=${engine}`);
+            if (engine !== 'claude-code') {
+              core.warning('The dsh engine runs with an unrestricted shell and both the gateway API key and the GitHub token in its environment. Fork PRs are skipped automatically.');
+            }
+
             // — 1) Model parsing (always executed to ensure matrix is always valid JSON) —
             const MAX_MODELS = 3; // max number of parallel review models
             const rawModels = `${{ inputs.models }}`;
@@ -159,8 +188,11 @@ jobs:
             }
             const mode = models.length > 1 ? 'multi' : 'single';
             const slugRe = /[^A-Za-z0-9._-]/g;
+            // The engine rides on each matrix entry so per-model mixing can be
+            // added later without changing the outer interface.
             const matrix = models.map((m, i) => ({
               model: m,
+              engine,
               slug: `m${i}-` + (m || 'default').replace(slugRe, '-'),
             }));
             const summaryModel = `${{ inputs.summary_model }}`.trim() || models[0];
@@ -339,7 +371,10 @@ jobs:
             const claudeComments = comments.filter(
               (c) =>
                 c.user.login.toLowerCase().includes('claude') ||
-                (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
+                (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')) ||
+                // Comments posted by the dsh engine carry a hidden marker; fold
+                // them too so switching engines does not accumulate stale reviews.
+                (c.user.login === 'github-actions[bot]' && c.body.includes('<!-- gatellm-code-review')),
             );
             for (const comment of claudeComments) {
               await github.graphql(
@@ -362,6 +397,7 @@ jobs:
             }
 
       - name: Detect Claude CLI path
+        if: matrix.engine == 'claude-code'
         id: detect
         shell: bash
         run: |
@@ -389,7 +425,7 @@ jobs:
           fi
 
       - name: Install Claude CLI if missing
-        if: steps.detect.outputs.claude_path == ''
+        if: matrix.engine == 'claude-code' && steps.detect.outputs.claude_path == ''
         id: install
         shell: bash
         run: |
@@ -446,6 +482,7 @@ jobs:
           echo "Installed Claude CLI at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
 
       - name: Resolve Claude CLI path
+        if: matrix.engine == 'claude-code'
         id: resolve
         shell: bash
         run: |
@@ -457,8 +494,70 @@ jobs:
           echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
           echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
+      # The dsh engine needs this repository's scripts. The reusable workflow
+      # does not get them from the caller's checkout, so fetch its own source
+      # at the commit that defines this job. Only `scripts/` is needed.
+      - name: Checkout gatellm-code-review scripts
+        if: matrix.engine == 'dsh'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .gatellm-code-review
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Check Node.js for dsh
+        id: dsh_node
+        if: matrix.engine == 'dsh'
+        shell: bash
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/check-node.sh
+
+      - name: Set up Node.js 24 for dsh
+        if: matrix.engine == 'dsh' && steps.dsh_node.outputs.node_ok != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Detect dsh CLI path
+        id: dsh_detect
+        if: matrix.engine == 'dsh'
+        shell: bash
+        env:
+          DSH_VERSION: ${{ inputs.dsh_version }}
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/detect.sh
+
+      - name: Install dsh CLI if missing
+        id: dsh_install
+        if: matrix.engine == 'dsh' && steps.dsh_detect.outputs.dsh_path == ''
+        shell: bash
+        env:
+          DSH_VERSION: ${{ inputs.dsh_version }}
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/install.sh
+
+      - name: Run dsh review
+        id: review_dsh
+        if: matrix.engine == 'dsh'
+        continue-on-error: ${{ needs.setup.outputs.mode == 'multi' }}
+        shell: bash
+        env:
+          ROLE: review
+          MODE: ${{ needs.setup.outputs.mode }}
+          MODEL: ${{ matrix.model }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          USER_REQUEST: ${{ inputs.user_request }}
+          REVIEW_LANGUAGE: ${{ inputs.review_language || 'English' }}
+          REVIEW_PROMPT: ${{ inputs.prompt }}
+          GH_TOKEN: ${{ github.token }}
+          DSH_BIN: ${{ steps.dsh_detect.outputs.dsh_path || steps.dsh_install.outputs.dsh_path }}
+          OUTPUT_FILE: ${{ needs.setup.outputs.mode == 'multi' && './claude-review-output.md' || '' }}
+          LOG_SLUG: ${{ matrix.slug }}
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/run.sh
+
       - name: Automatic PR Review (${{ matrix.model }})
         id: review_1
+        if: matrix.engine == 'claude-code'
         uses: anthropics/claude-code-action@v1
         continue-on-error: ${{ needs.setup.outputs.mode == 'multi' }}
         env:
@@ -522,7 +621,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: claude-exec-log-${{ matrix.slug }}
-          path: /tmp/claude-execution-output-*.json
+          path: |
+            /tmp/claude-execution-output-*.json
+            /tmp/dsh-execution-output-*
           retention-days: 3
           overwrite: true
           if-no-files-found: ignore
@@ -713,7 +814,10 @@ jobs:
             const claudeComments = comments.filter(
               (c) =>
                 c.user.login.toLowerCase().includes('claude') ||
-                (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')),
+                (c.user.login === 'github-actions[bot]' && c.body.startsWith('**Claude')) ||
+                // Comments posted by the dsh engine carry a hidden marker; fold
+                // them too so switching engines does not accumulate stale reviews.
+                (c.user.login === 'github-actions[bot]' && c.body.includes('<!-- gatellm-code-review')),
             );
             for (const comment of claudeComments) {
               await github.graphql(
@@ -736,6 +840,7 @@ jobs:
             }
 
       - name: Detect Claude CLI path
+        if: needs.setup.outputs.engine == 'claude-code'
         id: detect
         shell: bash
         run: |
@@ -763,7 +868,7 @@ jobs:
           fi
 
       - name: Install Claude CLI if missing
-        if: steps.detect.outputs.claude_path == ''
+        if: needs.setup.outputs.engine == 'claude-code' && steps.detect.outputs.claude_path == ''
         id: install
         shell: bash
         run: |
@@ -820,6 +925,7 @@ jobs:
           echo "Installed Claude CLI at: $CLAUDE_PATH ($($CLAUDE_PATH --version 2>/dev/null || echo 'version unknown'))"
 
       - name: Resolve Claude CLI path
+        if: needs.setup.outputs.engine == 'claude-code'
         id: resolve
         shell: bash
         run: |
@@ -831,7 +937,64 @@ jobs:
           echo "claude_path=${CLAUDE_PATH}" >> $GITHUB_OUTPUT
           echo "Resolved Claude CLI path: ${CLAUDE_PATH:-<empty>}"
 
+      - name: Checkout gatellm-code-review scripts
+        if: needs.setup.outputs.engine == 'dsh'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .gatellm-code-review
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Check Node.js for dsh
+        id: dsh_node
+        if: needs.setup.outputs.engine == 'dsh'
+        shell: bash
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/check-node.sh
+
+      - name: Set up Node.js 24 for dsh
+        if: needs.setup.outputs.engine == 'dsh' && steps.dsh_node.outputs.node_ok != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Detect dsh CLI path
+        id: dsh_detect
+        if: needs.setup.outputs.engine == 'dsh'
+        shell: bash
+        env:
+          DSH_VERSION: ${{ inputs.dsh_version }}
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/detect.sh
+
+      - name: Install dsh CLI if missing
+        id: dsh_install
+        if: needs.setup.outputs.engine == 'dsh' && steps.dsh_detect.outputs.dsh_path == ''
+        shell: bash
+        env:
+          DSH_VERSION: ${{ inputs.dsh_version }}
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/install.sh
+
+      - name: Run dsh summary
+        id: summary_dsh
+        if: needs.setup.outputs.engine == 'dsh'
+        shell: bash
+        env:
+          ROLE: summarize
+          MODE: multi
+          MODEL: ${{ needs.setup.outputs.summary_model }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          USER_REQUEST: ${{ inputs.user_request }}
+          REVIEW_LANGUAGE: ${{ inputs.review_language || 'English' }}
+          REVIEW_PROMPT: ${{ inputs.prompt }}
+          GH_TOKEN: ${{ github.token }}
+          DSH_BIN: ${{ steps.dsh_detect.outputs.dsh_path || steps.dsh_install.outputs.dsh_path }}
+          LOG_SLUG: summary
+        run: bash ./.gatellm-code-review/scripts/engines/dsh/run.sh
+
       - name: Summarize reviews
+        if: needs.setup.outputs.engine == 'claude-code'
         id: summarize_1
         uses: anthropics/claude-code-action@v1
         env:
@@ -919,7 +1082,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: claude-exec-log-summary
-          path: /tmp/claude-execution-output-*.json
+          path: |
+            /tmp/claude-execution-output-*.json
+            /tmp/dsh-execution-output-*
           retention-days: 3
           overwrite: true
           if-no-files-found: ignore
