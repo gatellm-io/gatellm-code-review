@@ -99,12 +99,15 @@ PATH="$tmpdir/empty" HOME="$SANDBOX_HOME" GITHUB_OUTPUT="$tmpdir/gh_output" \
   "$BASH_BIN" "$DSH_DIR/check-node.sh" > "$tmpdir/out" 2>&1
 assert_eq "no node anywhere -> node_ok=false" "node_ok=false" "$(tr -d '\r' < "$tmpdir/gh_output")"
 
-# A node only in the nvm layout is found and its directory is exported.
+# A node only in the nvm layout is found and its directory is exported. The
+# search list is pinned to the nvm tree so a runner's own Homebrew/usr-local
+# node cannot win the race and change which directory gets exported.
 mkdir -p "$tmpdir/home/.nvm/versions/node/v24.10.0/bin"
 printf '#!/bin/sh\necho v24.10.0\n' > "$tmpdir/home/.nvm/versions/node/v24.10.0/bin/node"
 chmod +x "$tmpdir/home/.nvm/versions/node/v24.10.0/bin/node"
 : > "$tmpdir/gh_output"; : > "$tmpdir/gh_path"
 PATH="$tmpdir/empty" HOME="$tmpdir/home" GITHUB_OUTPUT="$tmpdir/gh_output" GITHUB_PATH="$tmpdir/gh_path" \
+  DSH_NODE_SEARCH_DIRS="$tmpdir/home/.nvm/versions/node/*/bin" \
   "$BASH_BIN" "$DSH_DIR/check-node.sh" > "$tmpdir/out" 2>&1
 assert_eq "nvm-installed node is found" "node_ok=true" "$(tr -d '\r' < "$tmpdir/gh_output")"
 assert_contains "nvm node dir is added to GITHUB_PATH" "$(cat "$tmpdir/gh_path")" "$tmpdir/home/.nvm/versions/node/v24.10.0/bin"
