@@ -57,8 +57,18 @@ assert_not_contains() { # name haystack needle
 # --- Sandbox --------------------------------------------------------------
 # A minimal PATH holding only the tools the scripts use, so `command -v dsh`
 # and `command -v npm` cannot accidentally find the developer's real tools.
+# `fold`/`seq`/`base64` are additionally exercised by this harness itself (the
+# wrapped-base64 case), so a missing one is a prerequisite error, not a puzzling
+# assertion failure: check them up front.
+for tool in base64 fold seq; do
+  command -v "$tool" >/dev/null 2>&1 ||
+    { echo "FAIL: $tool is required to run the dsh engine tests" >&2; exit 1; }
+done
+# Resolve sed before any test prepends a fake to PATH: the fake `sed` forwards
+# the calls it does not fail deliberately, and must not assume /usr/bin/sed.
+REAL_SED="$(command -v sed)"
 mkdir -p "$tmpdir/tools" "$tmpdir/bin" "$tmpdir/home" "$tmpdir/workspace" "$tmpdir/empty"
-for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find base64; do
+for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find base64 fold seq; do
   src="$(command -v "$tool" 2>/dev/null || true)"
   [ -n "$src" ] && ln -sf "$src" "$tmpdir/tools/$tool"
 done
@@ -505,15 +515,21 @@ assert_contains "run: the wrapped base64 form is replaced by the marker" \
 
 # A failed scrub must never be silent: the file cannot be proven clean, so it is
 # removed from the upload and the failure is announced in the job log. The fake
-# sed fails only the rewrite pass (the escape pass has no -e), so the per-file
-# path is exercised rather than the pattern-derivation one.
+# sed fails only the rewrite pass (the escape pass has no -e), so this exercises
+# the per-file branch; the assertions below key on its own wording, which the
+# scrubber-build branch never prints.
 mkdir -p "$tmpdir/badsed"
-printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-e" ] && exit 1; done\nexec /usr/bin/sed "$@"\n' \
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-e" ] && exit 1; done\nexec "$REAL_SED" "$@"\n' \
   > "$tmpdir/badsed/sed"
 chmod +x "$tmpdir/badsed/sed"
-status="$(run_case test-redact-fail PATH="$tmpdir/badsed:$SANDBOX_PATH")"
+status="$(run_case test-redact-fail PATH="$tmpdir/badsed:$SANDBOX_PATH" REAL_SED="$REAL_SED")"
 assert_eq "run: an unscrubbable diagnostics file does not fail the turn" 0 "$status"
-assert_contains "run: a redaction failure is announced" "$(cat "$tmpdir/out")" "Could not redact credentials"
+# Pin the per-file branch specifically: the generic "Could not redact
+# credentials" prefix is also printed when the scrubber cannot be built at all.
+assert_contains "run: the per-file redaction failure is announced" \
+  "$(cat "$tmpdir/out")" "removed it from the uploaded diagnostics"
+assert_not_contains "run: a per-file failure does not block the whole upload" \
+  "$(cat "$tmpdir/out")" "withholding all dsh diagnostics"
 bad_log="/tmp/dsh-execution-output-test-redact-fail-1-attempt1"
 if [ -e "$bad_log/stderr.log" ] || [ -e "$bad_log/dump-config.txt" ] || [ -e "$bad_log/final.md" ]; then
   bad "run: an unscrubbable file must not be left in the upload directory"
@@ -522,14 +538,34 @@ else
 fi
 rm -rf "$tmpdir/badsed"
 
+# The other failure branch: if the scrubber itself cannot be built (here: sed
+# fails even on the escape pass), nothing at all is published and the message
+# must not be the per-file one.
+mkdir -p "$tmpdir/nosed"
+printf '#!/bin/sh\nexit 1\n' > "$tmpdir/nosed/sed"
+chmod +x "$tmpdir/nosed/sed"
+status="$(run_case test-redact-nopattern PATH="$tmpdir/nosed:$SANDBOX_PATH")"
+assert_eq "run: an unusable scrubber does not fail the turn" 0 "$status"
+assert_contains "run: a scrubber-build failure is announced" \
+  "$(cat "$tmpdir/out")" "failed to escape a scrubber pattern"
+assert_not_contains "run: a scrubber-build failure is not reported as per-file" \
+  "$(cat "$tmpdir/out")" "removed it from the uploaded diagnostics"
+nopattern_log="/tmp/dsh-execution-output-test-redact-nopattern-1-attempt1"
+if [ -e "$nopattern_log/stderr.log" ] || [ -e "$nopattern_log/dump-config.txt" ] || [ -e "$nopattern_log/final.md" ]; then
+  bad "run: a scrubber-build failure must not publish any diagnostics"
+else
+  ok "run: a scrubber-build failure publishes no diagnostics"
+fi
+rm -rf "$tmpdir/nosed"
+
 # If a file can be neither scrubbed nor deleted, nothing at all is published:
 # the upload directory stays empty instead of shipping the unscrubbed file.
 mkdir -p "$tmpdir/badboth"
-printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-e" ] && exit 1; done\nexec /usr/bin/sed "$@"\n' \
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-e" ] && exit 1; done\nexec "$REAL_SED" "$@"\n' \
   > "$tmpdir/badboth/sed"
 printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badboth/rm"
 chmod +x "$tmpdir/badboth/sed" "$tmpdir/badboth/rm"
-status="$(run_case test-redact-blocked PATH="$tmpdir/badboth:$SANDBOX_PATH")"
+status="$(run_case test-redact-blocked PATH="$tmpdir/badboth:$SANDBOX_PATH" REAL_SED="$REAL_SED")"
 assert_eq "run: an unscrubbable, undeletable file does not fail the turn" 0 "$status"
 assert_contains "run: withholding the diagnostics is announced" \
   "$(cat "$tmpdir/out")" "withholding all dsh diagnostics"
