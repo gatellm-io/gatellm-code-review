@@ -95,6 +95,17 @@ trap 'rm -rf "$DSH_HOME"' EXIT
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 
+# Diagnostics are staged inside the throwaway DSH_HOME and published to LOG_DIR
+# only after they have been scrubbed. LOG_DIR is what the upload step ships, so
+# if it only ever receives scrubbed files, an unscrubbable file cannot leak even
+# when it also cannot be deleted.
+RAW_DIR="$DSH_HOME/raw"
+mkdir -p "$RAW_DIR"
+# Set when a file cannot be scrubbed *and* cannot be deleted: publishing then
+# stops entirely, because a staged file we cannot inspect or remove makes the
+# whole staging directory untrustworthy.
+PUBLISH_BLOCKED=0
+
 echo "Preparing dsh: $("$DSH_BIN" --version 2>/dev/null || echo 'version unknown'), DSH_HOME=$DSH_HOME"
 
 # The model and gateway are injected as a patch layer (`dsh --patch`), because
@@ -143,7 +154,7 @@ export GATELLM_REVIEW_API_KEY="${ANTHROPIC_API_KEY:-}"
 cd "${GITHUB_WORKSPACE:-$(pwd)}" || { echo "::error::Cannot enter the workspace."; exit 1; }
 
 # Diagnostics only: which layer supplies each config value. Best effort.
-"$DSH_BIN" --profile headless --patch "$PATCH_FILE" --dump-config > "$LOG_DIR/dump-config.txt" 2>&1 || true
+"$DSH_BIN" --profile headless --patch "$PATCH_FILE" --dump-config > "$RAW_DIR/dump-config.txt" 2>&1 || true
 
 echo "Running dsh (role=$ROLE, mode=$MODE, prompt ${PROMPT_BYTES} bytes)"
 # No `set -e` in this script: capture dsh's own status explicitly and never let
@@ -154,16 +165,16 @@ echo "Running dsh (role=$ROLE, mode=$MODE, prompt ${PROMPT_BYTES} bytes)"
 # process-substitution `tee`: bash does not wait for a process substitution, so
 # an asynchronous tee can still be writing when we redact and upload, leaving
 # the tail (possibly the credential-bearing part) unscrubbed.
-"$DSH_BIN" --profile headless --patch "$PATCH_FILE" "$PROMPT" > "$LOG_DIR/final.md" 2> "$LOG_DIR/stderr.log"
+"$DSH_BIN" --profile headless --patch "$PATCH_FILE" "$PROMPT" > "$RAW_DIR/final.md" 2> "$RAW_DIR/stderr.log"
 STATUS=$?
 echo "dsh exited with status $STATUS"
 
 # --- Collect diagnostics --------------------------------------------------
 if [ -d "$DSH_HOME/sessions" ]; then
-  cp -R "$DSH_HOME/sessions" "$LOG_DIR/sessions" 2>/dev/null || true
+  cp -R "$DSH_HOME/sessions" "$RAW_DIR/sessions" 2>/dev/null || true
 fi
 if [ -f "$PATCH_FILE" ]; then
-  cp "$PATCH_FILE" "$LOG_DIR/patch.yml" 2>/dev/null || true
+  cp "$PATCH_FILE" "$RAW_DIR/patch.yml" 2>/dev/null || true
 fi
 
 # --- Redact credentials from uploaded diagnostics -------------------------
@@ -172,9 +183,11 @@ fi
 # control, so scrub the literal secret values before the upload step can ship
 # them; artifacts are readable by anyone with repository read access.
 #
-# Fail closed: if a file cannot be scrubbed, drop it instead of uploading it
-# unscrubbed. Silently ignoring a failed scrub here would ship the raw key and
-# token to anyone with repository read access, so every failure is announced.
+# Fail closed by construction: this runs against the staging directory, and
+# only files that survive it are published to LOG_DIR. A file that cannot be
+# scrubbed is deleted from staging; if even the delete fails, nothing at all is
+# published, so the upload directory never receives a file we could not clean.
+# Every failure is announced rather than silently ignored.
 redact_secrets() {
   local dir="$1" file secret escaped tmp failed
   while IFS= read -r file; do
@@ -200,16 +213,40 @@ redact_secrets() {
       if rm -f "$file" 2>/dev/null && [ ! -e "$file" ]; then
         echo "::warning::Could not redact credentials from '$file'; removed it from the uploaded diagnostics."
       else
-        echo "::error::Could not redact or remove '$file'; it may still contain the gateway key or GitHub token and will be uploaded."
+        # Removal failed too: the staged file cannot be proven clean, so no
+        # diagnostics are published at all. Nothing here is ever uploaded.
+        PUBLISH_BLOCKED=1
+        echo "::error::Could not redact or remove '$file'; withholding all dsh diagnostics from the upload rather than risk shipping a credential."
       fi
     fi
   done < <(find "$dir" -type f 2>/dev/null)
   return 0
 }
-redact_secrets "$LOG_DIR"
+redact_secrets "$RAW_DIR"
+
+# Publish only the files that survived redaction into the upload directory.
+publish_diagnostics() {
+  local src="$1" dest="$2" file rel
+  if [ "$PUBLISH_BLOCKED" -ne 0 ]; then
+    echo "::warning::dsh diagnostics were withheld from the upload because at least one file could not be redacted or removed."
+    return 0
+  fi
+  while IFS= read -r file; do
+    rel="${file#"$src"/}"
+    mkdir -p "$dest/$(dirname "$rel")" 2>/dev/null || true
+    if ! cp -p "$file" "$dest/$rel" 2>/dev/null; then
+      echo "::warning::Could not publish the scrubbed diagnostics file '$rel'; it is omitted from the upload."
+    fi
+  done < <(find "$src" -type f 2>/dev/null)
+}
+publish_diagnostics "$RAW_DIR" "$LOG_DIR"
+
 # Surface dsh's stderr in the job log only after redaction, so the workflow log
-# cannot show a credential the artifact no longer contains.
-cat "$LOG_DIR/stderr.log" >&2 || true
+# cannot show a credential the artifact no longer contains. Use the published
+# copy: if it was withheld, the unscrubbed original must not be echoed either.
+if [ -f "$LOG_DIR/stderr.log" ]; then
+  cat "$LOG_DIR/stderr.log" >&2 || true
+fi
 
 # --- Multi-model handoff --------------------------------------------------
 # The composed prompt tells dsh to write the body to ./claude-review-output.md
@@ -230,7 +267,7 @@ if [ "$ROLE" = "review" ] && [ "$MODE" = "multi" ] && [ -n "${OUTPUT_FILE:-}" ];
       fi
     fi
   else
-    echo "::warning::dsh produced no review output; leaving $OUTPUT_FILE unwritten."
+    echo "::warning::dsh produced no usable review output; leaving $OUTPUT_FILE unwritten."
   fi
 fi
 

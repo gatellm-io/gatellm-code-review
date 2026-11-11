@@ -381,6 +381,15 @@ assert_contains "run: dsh runs from the workspace" "$(cat "$tmpdir/env")" "PWD=$
 status="$(run_case test-fail FAKE_DSH_EXIT=3)"
 assert_eq "run: a failed turn keeps dsh's exit code" 3 "$status"
 
+# The --dump-config probe is diagnostic only: its body is collected, and a
+# failing probe must not change the turn's outcome.
+status="$(run_case test-dump-body FAKE_DSH_DUMP_CONFIG='apiKeyEnv: GATELLM_REVIEW_API_KEY')"
+assert_eq "run: a config probe still succeeds" 0 "$status"
+assert_contains "run: the probe body is collected" \
+  "$(cat /tmp/dsh-execution-output-test-dump-body-1-attempt1/dump-config.txt 2>/dev/null)" "apiKeyEnv"
+status="$(run_case test-dump-fail FAKE_DSH_DUMP_CONFIG_EXIT=2)"
+assert_eq "run: a failing config probe does not fail the turn" 0 "$status"
+
 : > "$tmpdir/step_summary"
 status="$(run_case test-fork FAKE_GH_CROSS_REPO=true GITHUB_STEP_SUMMARY="$tmpdir/step_summary")"
 assert_eq "run: a fork PR is skipped successfully" 0 "$status"
@@ -473,6 +482,24 @@ else
   ok "run: an unscrubbable file is removed before upload"
 fi
 rm -rf "$tmpdir/badsed"
+
+# If a file can be neither scrubbed nor deleted, nothing at all is published:
+# the upload directory stays empty instead of shipping the unscrubbed file.
+mkdir -p "$tmpdir/badboth"
+printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badboth/sed"
+printf '#!/bin/sh\nexit 1\n' > "$tmpdir/badboth/rm"
+chmod +x "$tmpdir/badboth/sed" "$tmpdir/badboth/rm"
+status="$(run_case test-redact-blocked PATH="$tmpdir/badboth:$SANDBOX_PATH")"
+assert_eq "run: an unscrubbable, undeletable file does not fail the turn" 0 "$status"
+assert_contains "run: withholding the diagnostics is announced" \
+  "$(cat "$tmpdir/out")" "withholding all dsh diagnostics"
+blocked_log="/tmp/dsh-execution-output-test-redact-blocked-1-attempt1"
+if [ -e "$blocked_log/stderr.log" ] || [ -e "$blocked_log/dump-config.txt" ] || [ -e "$blocked_log/final.md" ]; then
+  bad "run: a blocked run must not publish any diagnostics"
+else
+  ok "run: a blocked run publishes no diagnostics"
+fi
+rm -rf "$tmpdir/badboth"
 
 # The isolated harness home must not survive the run.
 assert_eq "run: DSH_HOME is removed on exit" 0 \

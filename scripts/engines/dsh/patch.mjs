@@ -67,10 +67,11 @@ const rawModel = (process.env.MODEL || '').trim();
 if (!rawModel) {
   fail('MODEL is required');
 }
-// `[1m]` is a Claude Code convention marking the 1M-token variant. Claude Code
-// strips it itself; dsh would forward it verbatim to the gateway. This is
-// unconditional: a caller whose gateway exposes a literal model id ending in
-// `[1m]` must configure that id without the suffix (see README, dsh specifics).
+// `[1m]` is a Claude Code client-side convention marking the 1M-token variant
+// (Claude Code strips it itself and never sends it as part of the model id);
+// dsh would forward it verbatim to the gateway. The strip is unconditional: a
+// gateway that requires a literal model id ending in `[1m]` is not usable
+// through this action, with either engine (see README, dsh specifics).
 const model = rawModel.replace(/\[1m\]$/i, '');
 
 const baseURL = normalizeBaseURL(process.env.ANTHROPIC_BASE_URL);

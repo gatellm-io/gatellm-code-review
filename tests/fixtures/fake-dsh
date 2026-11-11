@@ -10,6 +10,8 @@
 #   FAKE_DSH_ENV_FILE       selected environment variables, for the last run
 #   FAKE_DSH_WRITE_FILE     when set, write FAKE_DSH_WRITE_CONTENT to this path
 #   FAKE_DSH_WRITE_CONTENT  content for FAKE_DSH_WRITE_FILE
+#   FAKE_DSH_DUMP_CONFIG    stdout body of --dump-config (default: dump-config)
+#   FAKE_DSH_DUMP_CONFIG_EXIT exit code of --dump-config (default: 0)
 set -u
 
 if [ "${1:-}" = "--version" ]; then
