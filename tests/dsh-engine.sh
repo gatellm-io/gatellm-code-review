@@ -58,7 +58,7 @@ assert_not_contains() { # name haystack needle
 # A minimal PATH holding only the tools the scripts use, so `command -v dsh`
 # and `command -v npm` cannot accidentally find the developer's real tools.
 mkdir -p "$tmpdir/tools" "$tmpdir/bin" "$tmpdir/home" "$tmpdir/workspace" "$tmpdir/empty"
-for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee; do
+for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash sh wc tee find; do
   src="$(command -v "$tool" 2>/dev/null || true)"
   [ -n "$src" ] && ln -sf "$src" "$tmpdir/tools/$tool"
 done
@@ -135,6 +135,27 @@ assert_eq "detect: matching dsh_version accepted" "$SANDBOX_HOME/.local/bin/dsh"
 assert_eq "detect: mismatched dsh_version rejected" "" "$(detect '9.9.9')"
 assert_contains "detect: mismatch is reported" "$(cat "$tmpdir/out")" "::notice::"
 
+# Build metadata must validate and normalize to the same string.
+export FAKE_DSH_VERSION="1.2.3+build"
+assert_eq "detect: build-metadata version accepted" "$SANDBOX_HOME/.local/bin/dsh" "$(detect '1.2.3+build')"
+export FAKE_DSH_VERSION="0.2.2-rc.1"
+
+# --- version grammar (lib.sh) ----------------------------------------------
+# normalize_version and is_valid_version must agree on the same grammar.
+version_valid() { ( . "$DSH_DIR/lib.sh"; is_valid_version "$1" ) && echo yes || echo no; }
+version_norm() { ( . "$DSH_DIR/lib.sh"; normalize_version "$1" ); }
+assert_eq "lib: plain semver validates" yes "$(version_valid '1.2.3')"
+assert_eq "lib: pre-release validates" yes "$(version_valid '0.2.2-rc.1')"
+assert_eq "lib: build metadata validates" yes "$(version_valid '1.2.3+build')"
+assert_eq "lib: pre-release plus build metadata validates" yes "$(version_valid '1.2.3-rc.1+build.5')"
+assert_eq "lib: junk is rejected" no "$(version_valid '1.2.3 x')"
+assert_eq "lib: npm spec is rejected" no "$(version_valid 'latest')"
+assert_eq "lib: normalize keeps build metadata" "1.2.3+build" "$(version_norm 'dsh 1.2.3+build (abcdef)')"
+assert_eq "lib: normalize keeps pre-release plus build metadata" \
+  "1.2.3-rc.1+build.5" "$(version_norm '1.2.3-rc.1+build.5')"
+assert_eq "lib: a validated version survives normalization" "1.2.3+build" \
+  "$(version_norm "$(version_norm 'v1.2.3+build')")"
+
 # A broken binary must be skipped in favour of a later working one.
 rm -rf "$SANDBOX_HOME/.local"
 mkdir -p "$tmpdir/bin2" "$SANDBOX_HOME/.npm-global/bin"
@@ -208,6 +229,17 @@ status="$(install_run 'not a version')"
 assert_eq "install: rejects an invalid version" 1 "$status"
 assert_eq "install: invalid version never reaches npm" 0 "$(grep -c '@deepseek-ai/dsh' "$tmpdir/npm.log" || true)"
 
+# Without npm, fail early with an accurate message instead of blaming the tool
+# cache. The tools-only PATH has bash's helpers but no npm (and no dsh).
+: > "$tmpdir/gh_output"; : > "$tmpdir/out"
+env PATH="$tmpdir/tools" HOME="$SANDBOX_HOME" RUNNER_TOOL_CACHE="$tmpdir/toolcache" \
+  DSH_VERSION='' GITHUB_OUTPUT="$tmpdir/gh_output" \
+  "$BASH_BIN" "$DSH_DIR/install.sh" > "$tmpdir/out" 2>&1
+assert_eq "install: missing npm fails" 1 "$?"
+assert_contains "install: missing npm is named in the error" "$(cat "$tmpdir/out")" "npm is required"
+assert_not_contains "install: missing npm does not blame the tool cache" \
+  "$(cat "$tmpdir/out")" "npm install into the action tool cache failed"
+
 # ==========================================================================
 echo "== patch.mjs =="
 make_patch() { # out file, then assignments for node
@@ -239,6 +271,32 @@ make_patch "$PATCH" MODEL='m' ANTHROPIC_BASE_URL='https://gw.example/v1/' > /dev
 assert_contains "patch: handles a trailing slash before /v1" \
   "$(cat "$PATCH")" '"baseURL": "https://gw.example"'
 
+# Only a *trailing* /v1 segment is stripped. A /v1 followed by a path segment
+# is part of the gateway's base path and must survive untouched, otherwise the
+# request would land on the wrong URL.
+make_patch "$PATCH" MODEL='m' ANTHROPIC_BASE_URL='https://gw.example/v1/tenant' > /dev/null 2>&1
+assert_contains "patch: keeps /v1 when a path segment follows it" \
+  "$(cat "$PATCH")" '"baseURL": "https://gw.example/v1/tenant"'
+
+make_patch "$PATCH" MODEL='m' ANTHROPIC_BASE_URL='https://gw.example/' > /dev/null 2>&1
+assert_contains "patch: strips a lone trailing slash" \
+  "$(cat "$PATCH")" '"baseURL": "https://gw.example"'
+
+# --- patch shape is pinned to the version it was verified against -----------
+# The overlay relies on `config` being a full-line replacement (not a deep
+# merge) and on the two plugin ids below, both verified against this version
+# only. Pinning the version and the emitted shape here means a dsh bump cannot
+# change that assumption without a deliberate edit to this test.
+assert_eq "patch: DEFAULT_VERSION is the version the schema was verified against" \
+  "0.2.2-rc.1" "$(tr -d '[:space:]' < "$DSH_DIR/DEFAULT_VERSION")"
+make_patch "$PATCH" MODEL='m' ANTHROPIC_BASE_URL='' > /dev/null 2>&1
+assert_eq "patch: emits exactly two plugin layers" 2 \
+  "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).length)' "$PATCH")"
+assert_eq "patch: agent-default-model config is exactly provider+model" "provider,model" \
+  "$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(Object.keys(p[0].config).join(","))' "$PATCH")"
+assert_eq "patch: llm-pi-ai config is exactly providers" "providers" \
+  "$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(Object.keys(p[1].config).join(","))' "$PATCH")"
+
 # The secret must never be written to disk.
 make_patch "$PATCH" MODEL='m' ANTHROPIC_API_KEY='sk-secret-value-123' \
   GATELLM_REVIEW_API_KEY='sk-secret-value-123' > /dev/null 2>&1
@@ -265,7 +323,7 @@ assert_contains "compose: single mode carries the collapse marker" "$single" "<!
 
 multi="$(compose review multi)"
 assert_contains "compose: multi says not to post" "$multi" "Do NOT post any comment"
-assert_contains "compose: multi asks for a final answer" "$multi" "final answer"
+assert_contains "compose: multi writes the output file itself" "$multi" "./claude-review-output.md"
 assert_not_contains "compose: multi does not post through gh pr comment" "$multi" "leave your review as a comment"
 
 summary="$(compose summarize multi)"
@@ -321,26 +379,54 @@ assert_contains "run: dsh runs from the workspace" "$(cat "$tmpdir/env")" "PWD=$
 status="$(run_case test-fail FAKE_DSH_EXIT=3)"
 assert_eq "run: a failed turn keeps dsh's exit code" 3 "$status"
 
-status="$(run_case test-fork FAKE_GH_CROSS_REPO=true)"
+: > "$tmpdir/step_summary"
+status="$(run_case test-fork FAKE_GH_CROSS_REPO=true GITHUB_STEP_SUMMARY="$tmpdir/step_summary")"
 assert_eq "run: a fork PR is skipped successfully" 0 "$status"
-assert_contains "run: the fork skip is a warning" "$(cat "$tmpdir/out")" "::warning::"
+assert_contains "run: the fork skip is a notice" "$(cat "$tmpdir/out")" "::notice::"
+assert_contains "run: the fork skip is recorded in the step summary" \
+  "$(cat "$tmpdir/step_summary")" "dsh review skipped"
 if [ -s "$tmpdir/argv" ]; then
   bad "run: dsh must not be invoked for a fork PR"
 else
   ok "run: dsh is not invoked for a fork PR"
 fi
 
+# Only an exact `false` may proceed: an unexpected value must fail closed.
+status="$(run_case test-fork-null FAKE_GH_CROSS_REPO=null)"
+assert_eq "run: an unexpected isCrossRepository value fails closed" 1 "$status"
+assert_contains "run: the unexpected value is named" "$(cat "$tmpdir/out")" "instead of true or false"
+if [ -s "$tmpdir/argv" ]; then
+  bad "run: dsh must not be invoked for an unevaluable fork check"
+else
+  ok "run: dsh is not invoked for an unevaluable fork check"
+fi
+
 status="$(run_case test-ghfail FAKE_GH_EXIT=1)"
 assert_eq "run: an unevaluable fork check fails closed" 1 "$status"
+
+# The fork guard needs gh; a runner without it must say so up front.
+status="$(run_case test-nogh PATH="$tmpdir/tools")"
+assert_eq "run: a missing gh fails closed" 1 "$status"
+assert_contains "run: a missing gh is named in the error" "$(cat "$tmpdir/out")" "GitHub CLI (gh)"
 
 status="$(run_case test-no-bin DSH_BIN='')"
 assert_eq "run: a missing DSH_BIN fails" 1 "$status"
 
+# Multi mode: the model writes the output file itself (claude-code parity).
 outfile="$tmpdir/multi-out.md"
 rm -f "$outfile"
-status="$(run_case test-multi MODE=multi OUTPUT_FILE="$outfile" FAKE_DSH_STDOUT='REVIEW OUTPUT')"
+status="$(run_case test-multi MODE=multi OUTPUT_FILE="$outfile" \
+  FAKE_DSH_WRITE_FILE="$outfile" FAKE_DSH_WRITE_CONTENT='REVIEW OUTPUT' FAKE_DSH_STDOUT='STDOUT NOISE')"
 assert_eq "run: multi review succeeds" 0 "$status"
-assert_eq "run: multi review writes the output file" "REVIEW OUTPUT" "$(cat "$outfile" 2>/dev/null)"
+assert_eq "run: multi review uses the file the model wrote" "REVIEW OUTPUT" "$(cat "$outfile" 2>/dev/null)"
+assert_not_contains "run: the file wins over noisy stdout" "$(cat "$outfile" 2>/dev/null)" "STDOUT NOISE"
+
+# Fallback: if the model ignored the instruction, stdout is used but announced.
+rm -f "$outfile"
+status="$(run_case test-multi-stdout MODE=multi OUTPUT_FILE="$outfile" FAKE_DSH_STDOUT='STDOUT REVIEW')"
+assert_eq "run: multi review still succeeds from stdout" 0 "$status"
+assert_eq "run: stdout fallback writes the output file" "STDOUT REVIEW" "$(cat "$outfile" 2>/dev/null)"
+assert_contains "run: the stdout fallback is announced" "$(cat "$tmpdir/out")" "falling back to its stdout"
 
 rm -f "$outfile"
 status="$(run_case test-multi-empty MODE=multi OUTPUT_FILE="$outfile")"
@@ -350,6 +436,24 @@ if [ -e "$outfile" ]; then
 else
   ok "run: empty output leaves the file unwritten"
 fi
+
+# Credentials must be scrubbed from the diagnostics that get uploaded, and from
+# the stderr echo that goes into the workflow log.
+status="$(run_case test-secret FAKE_DSH_STDOUT='stdout sk-test and ghs_test' \
+  FAKE_DSH_STDERR='stderr sk-test and ghs_test')"
+assert_eq "run: a run whose output echoes secrets succeeds" 0 "$status"
+log_dir="/tmp/dsh-execution-output-test-secret-1-attempt1"
+assert_eq "run: the collected diagnostics no longer contain the gateway key" 0 \
+  "$(grep -rl 'sk-test' "$log_dir" 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "run: the collected diagnostics no longer contain the GitHub token" 0 \
+  "$(grep -rl 'ghs_test' "$log_dir" 2>/dev/null | wc -l | tr -d ' ')"
+assert_contains "run: the redaction marker is in stdout and stderr" \
+  "$(cat "$log_dir/final.md" "$log_dir/stderr.log" 2>/dev/null)" "***REDACTED***"
+assert_not_contains "run: the workflow log echo is redacted too" "$(cat "$tmpdir/out")" "sk-test"
+
+# The isolated harness home must not survive the run.
+assert_eq "run: DSH_HOME is removed on exit" 0 \
+  "$(ls -d /tmp/dsh-home-test-pass-* 2>/dev/null | wc -l | tr -d ' ')"
 
 big="$(printf 'x%.0s' $(seq 1 130000))"
 status="$(run_case test-big REVIEW_PROMPT="$big")"
@@ -546,8 +650,52 @@ for job, line, name, body in steps(workflow, r"^  [A-Za-z0-9_-]+:$"):
     joined = "\n".join(job_steps)
     if "job.workflow_sha" not in joined or ".gatellm-code-review" not in joined:
         fail(f"workflow [{job}]: dsh steps must check out the action's own scripts at job.workflow_sha")
+    elif "job.workflow_repository" not in joined:
+        fail(f"workflow [{job}]: the scripts checkout does not set repository: job.workflow_repository"
+             " (it would silently clone the caller's repository instead)")
     else:
-        ok(f"workflow [{job}]: scripts are checked out from job.workflow_sha")
+        ok(f"workflow [{job}]: scripts are checked out from job.workflow_repository @ job.workflow_sha")
+
+# --- dsh artifacts are scoped to this run ----------------------------------
+# An unanchored glob can pick up another in-flight run's session transcripts on
+# a shared self-hosted runner.
+DSH_SCOPED_GLOB = "/tmp/dsh-execution-output-*-${{ github.run_id }}-*"
+CLAUDE_SCOPED_GLOB = "/tmp/claude-execution-output-*-${{ github.run_id }}-*.json"
+action_text = "\n".join(read(action))
+workflow_text = "\n".join(read(workflow))
+for label, text in (("action.yml", action_text), ("workflow", workflow_text)):
+    if DSH_SCOPED_GLOB not in text:
+        fail(f"{label}: the dsh artifact glob is not scoped to ${{ github.run_id }}")
+    else:
+        ok(f"{label}: the dsh artifact glob is scoped to the run")
+    if CLAUDE_SCOPED_GLOB not in text:
+        fail(f"{label}: the claude artifact glob is not scoped to ${{ github.run_id }}")
+    else:
+        ok(f"{label}: the claude artifact glob is scoped to the run")
+
+# --- engine normalization must not drift between the two copies -------------
+# action.yml resolves the engine in bash, the reusable workflow in JavaScript;
+# both must accept exactly the same values (see the NOTE in each file).
+m = re.search(r'case "\$ENGINE" in\s*\n\s*([A-Za-z0-9_|.-]+)\)', action_text)
+action_values = set(m.group(1).split("|")) if m else None
+m = re.search(r"\[([^\]]*)\]\.includes\(engine\)", workflow_text)
+workflow_values = set(re.findall(r"'([^']+)'", m.group(1))) if m else None
+if not action_values or not workflow_values:
+    fail("engine allow-list could not be located in one of the two files")
+elif action_values != workflow_values:
+    fail(f"engine allow-lists drifted: action.yml={sorted(action_values)} "
+         f"workflow={sorted(workflow_values)}")
+else:
+    ok(f"engine allow-lists match in both files: {sorted(action_values)}")
+
+if "tr '[:upper:]' '[:lower:]'" not in action_text or ".toLowerCase()" not in workflow_text:
+    fail("engine normalization no longer lowercases in both copies")
+else:
+    ok("engine normalization lowercases in both copies")
+if "tr -d '[:space:]'" not in action_text or "replace(/\\s+/g, '')" not in workflow_text:
+    fail("engine normalization no longer strips whitespace in both copies")
+else:
+    ok("engine normalization strips whitespace in both copies")
 
 sys.exit(1 if failures else 0)
 PY

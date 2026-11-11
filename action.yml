@@ -138,6 +138,9 @@ runs:
         fi
         echo "Using model: $MODEL"
 
+    # NOTE: engine normalization is duplicated in the reusable workflow's `plan`
+    # step (JavaScript). tests/dsh-engine.sh asserts both copies accept the same
+    # values and normalize the same way; edit both together.
     - name: Resolve review engine
       id: engine
       shell: bash
@@ -573,8 +576,8 @@ runs:
       with:
         name: claude-exec-log
         path: |
-          /tmp/claude-execution-output-*.json
-          /tmp/dsh-execution-output-*
+          /tmp/claude-execution-output-*-${{ github.run_id }}-*.json
+          /tmp/dsh-execution-output-*-${{ github.run_id }}-*
         retention-days: 1
         overwrite: true
         if-no-files-found: ignore

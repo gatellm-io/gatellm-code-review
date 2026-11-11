@@ -34,6 +34,13 @@ if [ -z "$DSH_BIN" ] || [ ! -x "$DSH_BIN" ]; then
   exit 1
 fi
 
+# The fork guard shells out to `gh`; say so plainly instead of failing later
+# with a generic "unable to determine" message when the CLI is not installed.
+if ! command -v gh >/dev/null 2>&1; then
+  echo "::error::The dsh engine requires the GitHub CLI (gh) on PATH for its fork-PR guard, but gh was not found. Install gh on this runner."
+  exit 1
+fi
+
 # --- Fork guard -----------------------------------------------------------
 # The agent runs with an unrestricted shell, the gateway API key and the
 # GitHub token in its environment. On a fork PR, anyone able to comment can
@@ -53,8 +60,23 @@ if [ -z "$CROSS_REPO" ]; then
   exit 1
 fi
 if [ "$CROSS_REPO" = "true" ]; then
-  echo "::warning::PR #$PR_NUMBER is from a fork. Skipping the dsh review: an unrestricted agent must not read untrusted PR content with repository secrets available."
+  # A skip exits 0, so make it legible: otherwise the run looks green with no
+  # review for no stated reason.
+  echo "::notice::PR #$PR_NUMBER is from a fork; skipping the dsh review (an unrestricted agent must not read untrusted PR content with repository secrets available)."
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      printf '### dsh review skipped\n\n'
+      printf 'PR #%s is from a fork. The dsh engine refuses to run because the agent has an unrestricted shell plus the gateway API key and the GitHub token in its environment.\n' "$PR_NUMBER"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
   exit 0
+fi
+# Only an exact `false` may proceed. Anything else (a `null` from an older gh
+# or a renamed field, unexpected stdout text, ...) means the check could not be
+# evaluated, and running unguarded is exactly what this guard exists to prevent.
+if [ "$CROSS_REPO" != "false" ]; then
+  echo "::error::Fork check for PR #$PR_NUMBER returned '$CROSS_REPO' instead of true or false; refusing to run the dsh engine."
+  exit 1
 fi
 
 # --- Isolated harness home -------------------------------------------------
@@ -65,6 +87,10 @@ if ! DSH_HOME="$(mktemp -d "/tmp/dsh-home-${LOG_SLUG}-XXXXXX")"; then
   exit 1
 fi
 export DSH_HOME
+# Self-hosted runners keep /tmp between runs: remove the harness home on exit so
+# session data (prompt, tool I/O) does not accumulate there. The diagnostics we
+# keep live in LOG_DIR, which is copied out before this trap runs.
+trap 'rm -rf "$DSH_HOME"' EXIT
 # Self-hosted runners keep /tmp between runs; start from a clean log directory.
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
@@ -120,10 +146,16 @@ cd "${GITHUB_WORKSPACE:-$(pwd)}" || { echo "::error::Cannot enter the workspace.
 "$DSH_BIN" --profile headless --patch "$PATCH_FILE" --dump-config > "$LOG_DIR/dump-config.txt" 2>&1 || true
 
 echo "Running dsh (role=$ROLE, mode=$MODE, prompt ${PROMPT_BYTES} bytes)"
-set +e
-"$DSH_BIN" --profile headless --patch "$PATCH_FILE" "$PROMPT" > "$LOG_DIR/final.md" 2> >(tee "$LOG_DIR/stderr.log" >&2)
+# No `set -e` in this script: capture dsh's own status explicitly and never let
+# a later diagnostics command replace it. (A `set +e … set -e` pair here used to
+# turn errexit *on* for the rest of the script.)
+#
+# stderr goes to a file first and is echoed afterwards rather than through a
+# process-substitution `tee`: bash does not wait for a process substitution, so
+# an asynchronous tee can still be writing when we redact and upload, leaving
+# the tail (possibly the credential-bearing part) unscrubbed.
+"$DSH_BIN" --profile headless --patch "$PATCH_FILE" "$PROMPT" > "$LOG_DIR/final.md" 2> "$LOG_DIR/stderr.log"
 STATUS=$?
-set -e
 echo "dsh exited with status $STATUS"
 
 # --- Collect diagnostics --------------------------------------------------
@@ -134,14 +166,42 @@ if [ -f "$PATCH_FILE" ]; then
   cp "$PATCH_FILE" "$LOG_DIR/patch.yml" 2>/dev/null || true
 fi
 
+# --- Redact credentials from uploaded diagnostics -------------------------
+# The agent runs with the gateway key and the GitHub token in its environment.
+# `stderr.log` and the session transcript are written by tools we do not
+# control, so scrub the literal secret values before the upload step can ship
+# them; artifacts are readable by anyone with repository read access.
+redact_secrets() {
+  local dir="$1" file secret escaped
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+    for secret in "${ANTHROPIC_API_KEY:-}" "${GATELLM_REVIEW_API_KEY:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"; do
+      [ -n "$secret" ] || continue
+      # Escape sed's regex metacharacters so the secret is matched literally.
+      escaped="$(printf '%s' "$secret" | sed 's/[][\\.*^$|&/]/\\&/g')"
+      sed -i.bak "s/$escaped/***REDACTED***/g" "$file" 2>/dev/null || true
+      rm -f "$file.bak"
+    done
+  done < <(find "$dir" -type f 2>/dev/null)
+  return 0
+}
+redact_secrets "$LOG_DIR"
+# Surface dsh's stderr in the job log only after redaction, so the workflow log
+# cannot show a credential the artifact no longer contains.
+cat "$LOG_DIR/stderr.log" >&2 || true
+
 # --- Multi-model handoff --------------------------------------------------
-# The packaging step reads ./claude-review-output.md for every engine, so only
-# the body is handed over here. An empty answer is left unwritten on purpose:
-# the packaging step then records the model as producing no output.
+# The composed prompt tells dsh to write the body to ./claude-review-output.md
+# itself, matching the claude-code path, so no banner or progress line on
+# stdout can be mistaken for the review. Raw stdout is only a last-resort
+# fallback, and that fallback is announced.
 if [ "$ROLE" = "review" ] && [ "$MODE" = "multi" ] && [ -n "${OUTPUT_FILE:-}" ]; then
-  if [ -s "$LOG_DIR/final.md" ] && [ -n "$(tr -d '[:space:]' < "$LOG_DIR/final.md")" ]; then
+  if [ -s "$OUTPUT_FILE" ] && [ -n "$(tr -d '[:space:]' < "$OUTPUT_FILE")" ]; then
+    echo "dsh wrote the review body to $OUTPUT_FILE"
+  elif [ -s "$LOG_DIR/final.md" ] && [ -n "$(tr -d '[:space:]' < "$LOG_DIR/final.md")" ]; then
+    echo "::warning::dsh did not write $OUTPUT_FILE; falling back to its stdout, which may contain more than the review body."
     if cp "$LOG_DIR/final.md" "$OUTPUT_FILE"; then
-      echo "Wrote the review body to $OUTPUT_FILE"
+      echo "Wrote the review body to $OUTPUT_FILE (stdout fallback)"
     else
       echo "::error::Failed to write the review body to $OUTPUT_FILE."
       if [ "$STATUS" -eq 0 ]; then

@@ -161,6 +161,9 @@ jobs:
         with:
           script: |
             // — 0) Review engine (normalized here so every downstream job agrees) —
+            // NOTE: this duplicates action.yml's "Resolve review engine" step.
+            // tests/dsh-engine.sh asserts both accept the same values and
+            // normalize the same way; edit both together.
             const rawEngine = (process.env.ENGINE_INPUT || '').replace(/\s+/g, '').toLowerCase();
             const engine = rawEngine || 'claude-code';
             if (!['claude-code', 'dsh'].includes(engine)) {
@@ -622,8 +625,8 @@ jobs:
         with:
           name: claude-exec-log-${{ matrix.slug }}
           path: |
-            /tmp/claude-execution-output-*.json
-            /tmp/dsh-execution-output-*
+            /tmp/claude-execution-output-*-${{ github.run_id }}-*.json
+            /tmp/dsh-execution-output-*-${{ github.run_id }}-*
           retention-days: 3
           overwrite: true
           if-no-files-found: ignore
@@ -1083,8 +1086,8 @@ jobs:
         with:
           name: claude-exec-log-summary
           path: |
-            /tmp/claude-execution-output-*.json
-            /tmp/dsh-execution-output-*
+            /tmp/claude-execution-output-*-${{ github.run_id }}-*.json
+            /tmp/dsh-execution-output-*-${{ github.run_id }}-*
           retention-days: 3
           overwrite: true
           if-no-files-found: ignore

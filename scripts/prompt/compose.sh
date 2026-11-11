@@ -77,7 +77,7 @@ EOF
 print_review_delivery() {
   if [ "$MODE" = "multi" ]; then
     cat <<'EOF'
-IMPORTANT: Do NOT post any comment to the PR. Instead, reply with your complete review in Markdown as your final answer; the harness captures the final answer as the review body. The reply must be exactly the review body you would otherwise post, nothing else.
+IMPORTANT: Do NOT post any comment to the PR. Instead, use the shell to write your complete review in Markdown to the file `./claude-review-output.md` (relative to the repository root), then reply with a short confirmation. The harness reads that file as the review body, so it must contain exactly the review you would otherwise post — no preamble, no progress notes, no fences around the whole document.
 
 EOF
     return 0

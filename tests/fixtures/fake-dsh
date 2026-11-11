@@ -2,11 +2,14 @@
 # Test double for the dsh CLI.
 #
 # Environment:
-#   FAKE_DSH_VERSION   reported by --version
-#   FAKE_DSH_STDOUT    printed on a real run (default: empty)
-#   FAKE_DSH_EXIT      exit code of a real run (default: 0)
-#   FAKE_DSH_ARGV_FILE one argument per line, for the last run
-#   FAKE_DSH_ENV_FILE  selected environment variables, for the last run
+#   FAKE_DSH_VERSION        reported by --version
+#   FAKE_DSH_STDOUT         printed on stdout on a real run (default: empty)
+#   FAKE_DSH_STDERR         printed on stderr on a real run (default: empty)
+#   FAKE_DSH_EXIT           exit code of a real run (default: 0)
+#   FAKE_DSH_ARGV_FILE      one argument per line, for the last run
+#   FAKE_DSH_ENV_FILE       selected environment variables, for the last run
+#   FAKE_DSH_WRITE_FILE     when set, write FAKE_DSH_WRITE_CONTENT to this path
+#   FAKE_DSH_WRITE_CONTENT  content for FAKE_DSH_WRITE_FILE
 set -u
 
 if [ "${1:-}" = "--version" ]; then
@@ -33,5 +36,11 @@ if [ -n "${FAKE_DSH_ENV_FILE:-}" ]; then
   } > "$FAKE_DSH_ENV_FILE"
 fi
 
+if [ -n "${FAKE_DSH_WRITE_FILE:-}" ]; then
+  mkdir -p "$(dirname "$FAKE_DSH_WRITE_FILE")" 2>/dev/null || true
+  printf '%s\n' "${FAKE_DSH_WRITE_CONTENT:-}" > "$FAKE_DSH_WRITE_FILE"
+fi
+
 [ -n "${FAKE_DSH_STDOUT:-}" ] && printf '%s\n' "$FAKE_DSH_STDOUT"
+[ -n "${FAKE_DSH_STDERR:-}" ] && printf '%s\n' "$FAKE_DSH_STDERR" >&2
 exit "${FAKE_DSH_EXIT:-0}"

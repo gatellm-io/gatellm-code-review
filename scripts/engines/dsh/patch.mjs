@@ -17,6 +17,11 @@
 // run.sh and rewrites both the sandbox mode and the approval policy without
 // needing a copy of the preset table.
 //
+// That replacement semantics was verified against @deepseek-ai/dsh 0.2.2-rc.1,
+// the version in DEFAULT_VERSION. tests/dsh-engine.sh pins that version and the
+// emitted entry shape, so bumping the default is a deliberate change that has
+// to be re-validated rather than a silent one.
+//
 // The document is JSON, which is valid YAML: no hand-built YAML quoting, so a
 // model id or URL containing `:` or `#` cannot corrupt it. The API key is
 // referenced by environment-variable name only, never written here.
@@ -41,7 +46,9 @@ function positiveInt(value) {
 
 // dsh appends `/v1/messages` to baseURL. A caller who copied an
 // OpenAI-style endpoint ending in `/v1` would otherwise get `/v1/v1/messages`,
-// so drop one trailing `/v1`: the resulting request URL is identical either way.
+// so drop exactly one *trailing* `/v1` segment after removing trailing slashes:
+// the resulting request URL is identical either way. A `/v1` that is followed
+// by a path segment (`.../v1/foo`) is part of the base path and is left alone.
 function normalizeBaseURL(raw) {
   const trimmed = (raw || '').trim();
   if (!trimmed) {
@@ -61,7 +68,9 @@ if (!rawModel) {
   fail('MODEL is required');
 }
 // `[1m]` is a Claude Code convention marking the 1M-token variant. Claude Code
-// strips it itself; dsh would forward it verbatim to the gateway.
+// strips it itself; dsh would forward it verbatim to the gateway. This is
+// unconditional: a caller whose gateway exposes a literal model id ending in
+// `[1m]` must configure that id without the suffix (see README, dsh specifics).
 const model = rawModel.replace(/\[1m\]$/i, '');
 
 const baseURL = normalizeBaseURL(process.env.ANTHROPIC_BASE_URL);

@@ -35,21 +35,24 @@ fail_install() {
   exit 1
 }
 
+# Both install branches need npm (dsh is an npm package). Say that instead of
+# falling through to a tool-cache failure that names the wrong cause.
+if ! command -v npm >/dev/null 2>&1; then
+  echo "::error::npm is required to install the dsh CLI but was not found on PATH. Install Node.js/npm, or preinstall dsh and re-run (see README, dsh CLI install)."
+  exit 1
+fi
+
 # 1) Global install.
-if command -v npm >/dev/null 2>&1; then
-  echo "Trying npm install -g $SPEC ..."
-  if npm install -g "$SPEC"; then
-    if FOUND="$(find_dsh "$VERSION")"; then
-      echo "dsh_path=$FOUND" >> "$GITHUB_OUTPUT"
-      echo "Installed dsh CLI via npm -g at: $FOUND (version $(dsh_version_of "$FOUND"))"
-      exit 0
-    fi
-    echo "::warning::npm -g succeeded but no usable dsh binary was found; falling back to the action tool cache."
-  else
-    echo "::warning::npm install -g failed (often EACCES on the global prefix); falling back to the action tool cache."
+echo "Trying npm install -g $SPEC ..."
+if npm install -g "$SPEC"; then
+  if FOUND="$(find_dsh "$VERSION")"; then
+    echo "dsh_path=$FOUND" >> "$GITHUB_OUTPUT"
+    echo "Installed dsh CLI via npm -g at: $FOUND (version $(dsh_version_of "$FOUND"))"
+    exit 0
   fi
+  echo "::warning::npm -g succeeded but no usable dsh binary was found; falling back to the action tool cache."
 else
-  echo "::warning::npm not found on PATH; cannot install dsh without npm."
+  echo "::warning::npm install -g failed (often EACCES on the global prefix); falling back to the action tool cache."
 fi
 
 # 2) Private prefix under the tool cache.

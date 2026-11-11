@@ -4,6 +4,12 @@
 # Every function here is POSIX-ish bash and safe on the macOS /bin/bash 3.2 that
 # self-hosted runners use, so no associative arrays and no `mapfile`.
 
+# The version grammar shared by normalize_version and is_valid_version:
+#   MAJOR.MINOR.PATCH[-PRERELEASE][+BUILDMETA]
+# Keep the two in sync: a version that validates must also survive
+# normalization unchanged (and vice versa).
+# Written with a `[+]` class because a bare `+` is a regex quantifier.
+
 # Extract the first semantic version from arbitrary `--version` output.
 # Prints nothing when the input contains no version.
 normalize_version() {
@@ -13,7 +19,7 @@ normalize_version() {
   [ -n "$raw" ] || return 0
   printf '%s\n' "$raw" \
     | tr -d '\r' \
-    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?([+][0-9A-Za-z.]+)?' \
     | head -n 1
 }
 
@@ -80,12 +86,13 @@ find_dsh() {
 }
 
 # Reject anything that is not a plain semver, so a caller-supplied value can
-# never turn into an arbitrary npm spec (or a shell word).
+# never turn into an arbitrary npm spec (or a shell word). Accepts the same
+# grammar as normalize_version, including build metadata (`1.2.3+build`).
 is_valid_version() {
   case "$1" in
     '' | *[!0-9A-Za-z.+-]*) return 1 ;;
   esac
-  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?([+][0-9A-Za-z.]+)?$ ]]
 }
 
 # Read the pinned default version shipped next to this file.
