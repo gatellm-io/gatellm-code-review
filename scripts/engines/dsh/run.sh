@@ -161,14 +161,43 @@ export DSH_PERMISSION_MODE=danger-full-access
 # The generated patch references this variable by name; the value never touches disk.
 export GATELLM_REVIEW_API_KEY="${ANTHROPIC_API_KEY:-}"
 
+# Bound both invocations so a stalled turn cannot pin a self-hosted runner until
+# the job's default timeout (6 hours on GitHub-hosted). GNU coreutils `timeout`
+# is used when present (`gtimeout` from Homebrew); a runner with neither runs
+# unbounded, and the job-level timeout still bounds it. Both values are
+# env-overridable but must be a positive integer.
+timeout_seconds() { # value default
+  case "${1:-}" in
+    '' | *[!0-9]* | 0) printf '%s' "$2" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+TURN_TIMEOUT="$(timeout_seconds "${DSH_TURN_TIMEOUT:-}" 3600)"
+PROBE_TIMEOUT="$(timeout_seconds "${DSH_PROBE_TIMEOUT:-}" 120)"
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_BIN=gtimeout
+fi
+run_with_timeout() { # seconds command...
+  local limit="$1"
+  shift
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" "$limit" "$@"
+  else
+    "$@"
+  fi
+}
+
 # The invoking directory is dsh's workspace root; always run from the PR
 # checkout, never from wherever the caller happened to invoke us.
 cd "${GITHUB_WORKSPACE:-$(pwd)}" || { echo "::error::Cannot enter the workspace."; exit 1; }
 
 # Diagnostics only: which layer supplies each config value. Best effort.
-"$DSH_BIN" --profile headless --patch "$PATCH_FILE" --dump-config > "$RAW_DIR/dump-config.txt" 2>&1 || true
+run_with_timeout "$PROBE_TIMEOUT" "$DSH_BIN" --profile headless --patch "$PATCH_FILE" --dump-config > "$RAW_DIR/dump-config.txt" 2>&1 || true
 
-echo "Running dsh (role=$ROLE, mode=$MODE, prompt ${PROMPT_BYTES} bytes)"
+echo "Running dsh (role=$ROLE, mode=$MODE, prompt ${PROMPT_BYTES} bytes, timeout ${TURN_TIMEOUT}s${TIMEOUT_BIN:+, via $TIMEOUT_BIN})"
 # No `set -e` in this script: capture dsh's own status explicitly and never let
 # a later diagnostics command replace it. (A `set +e … set -e` pair here used to
 # turn errexit *on* for the rest of the script.)
@@ -177,9 +206,14 @@ echo "Running dsh (role=$ROLE, mode=$MODE, prompt ${PROMPT_BYTES} bytes)"
 # process-substitution `tee`: bash does not wait for a process substitution, so
 # an asynchronous tee can still be writing when we redact and upload, leaving
 # the tail (possibly the credential-bearing part) unscrubbed.
-"$DSH_BIN" --profile headless --patch "$PATCH_FILE" "$PROMPT" > "$RAW_DIR/final.md" 2> "$RAW_DIR/stderr.log"
+run_with_timeout "$TURN_TIMEOUT" "$DSH_BIN" --profile headless --patch "$PATCH_FILE" "$PROMPT" > "$RAW_DIR/final.md" 2> "$RAW_DIR/stderr.log"
 STATUS=$?
 echo "dsh exited with status $STATUS"
+# GNU `timeout` (and Homebrew's `gtimeout`) reports 124 when it had to terminate
+# the command; only trust that reading when a wrapper was actually used.
+if [ -n "$TIMEOUT_BIN" ] && [ "$STATUS" -eq 124 ]; then
+  echo "::error::dsh did not finish within ${TURN_TIMEOUT}s (DSH_TURN_TIMEOUT); the turn was terminated."
+fi
 
 # --- Collect diagnostics --------------------------------------------------
 if [ -d "$DSH_HOME/sessions" ]; then

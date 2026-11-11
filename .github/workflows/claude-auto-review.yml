@@ -205,25 +205,26 @@ jobs:
             core.setOutput('summary_model', summaryModel);
             core.info(`Resolved mode=${mode}, models=[${models.join(', ')}], summary_model=${summaryModel}`);
 
-            // — 2) PR facts: fork status always, size only when the check runs —
-            // run.sh refuses to run the dsh engine on a fork PR; the summarize
-            // job needs the same fact up front, otherwise a multi-model run made
-            // entirely of skipped legs ends in a "no output" failure instead of
-            // a clean skip. Fetched before the size-check early returns so the
-            // value is available on manual reruns and when max_lines is -1.
-            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
+            // — 2) Fork status, without an API call when the event carries it —
+            // run.sh refuses to run the dsh engine on a fork PR, and the
+            // summarize job needs the same fact so a multi-model run made
+            // entirely of skipped legs ends in a clean skip instead of a "no
+            // output" failure. A `pull_request` payload carries the head repo;
+            // an `issue_comment` payload does not and is refined from the API
+            // below. Leaving it empty means "not a fork", which is exactly the
+            // pre-dsh behavior on the paths that never fetched the PR.
             const baseFullName = `${context.repo.owner}/${context.repo.repo}`;
-            // A null head repo means the fork was deleted: treat it as a fork.
-            const isFork = !pr.head?.repo || pr.head.repo.full_name !== baseFullName;
-            core.setOutput('is_fork', String(isFork));
-            core.info(`PR head repo: ${pr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
+            const payloadPr = context.payload.pull_request;
+            if (payloadPr) {
+              // A null head repo means the fork was deleted: treat it as a fork.
+              const isFork = !payloadPr.head?.repo || payloadPr.head.repo.full_name !== baseFullName;
+              core.setOutput('is_fork', String(isFork));
+              core.info(`PR head repo: ${payloadPr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
+            }
 
-            // Size check (skip if run_attempt>1; disabled if max_lines=-1)
+            // — 3) PR size check (skip if run_attempt>1; disabled if max_lines=-1) —
+            // The PR fetch stays behind these early returns: neither a manual
+            // rerun nor `max_lines: -1` should gain a hard dependency on it.
             const runAttempt = parseInt('${{ github.run_attempt }}');
             if (runAttempt > 1) {
               core.info(`Manual rerun detected (attempt ${runAttempt}), skipping size check.`);
@@ -236,6 +237,16 @@ jobs:
               core.setOutput('too_large', 'false');
               return;
             }
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            // Authoritative for issue_comment too, where the payload has no head repo.
+            const isFork = !pr.head?.repo || pr.head.repo.full_name !== baseFullName;
+            core.setOutput('is_fork', String(isFork));
+            core.info(`PR head repo: ${pr.head?.repo?.full_name ?? '(deleted)'}; is_fork=${isFork}`);
             const totalLines = pr.additions + pr.deletions;
             core.info(`PR total changed lines: ${totalLines} (additions: ${pr.additions}, deletions: ${pr.deletions})`);
             if (totalLines > maxLines) {
@@ -643,6 +654,14 @@ jobs:
           retention-days: 3
           overwrite: true
           if-no-files-found: ignore
+
+      - name: Clean up dsh diagnostics
+        # After the upload: a reused self-hosted runner must not accumulate one
+        # session transcript per run under /tmp. Scoped to this leg's slug so a
+        # parallel matrix leg's directory is never removed.
+        if: always()
+        shell: bash
+        run: rm -rf /tmp/dsh-execution-output-${{ matrix.slug }}-${{ github.run_id }}-attempt*
 
       - name: Package review output
         # A leg the dsh engine skipped (fork PR) has no review by design: skip
@@ -1109,3 +1128,9 @@ jobs:
           retention-days: 3
           overwrite: true
           if-no-files-found: ignore
+
+      - name: Clean up dsh diagnostics (summarize)
+        # After the upload; the summarize leg's slug is `summary`.
+        if: always()
+        shell: bash
+        run: rm -rf /tmp/dsh-execution-output-summary-${{ github.run_id }}-attempt*

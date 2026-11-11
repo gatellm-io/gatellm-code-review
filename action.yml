@@ -571,7 +571,10 @@ runs:
         echo "dst=$dst" >> $GITHUB_OUTPUT
 
     - name: Upload execution log
-      if: failure()
+      # The Claude log is only useful when something failed; a dsh turn that
+      # succeeds but comes out wrong needs its diagnostics too, so dsh always
+      # uploads (matching the reusable workflow's `if: always()`).
+      if: failure() || steps.engine.outputs.engine == 'dsh'
       uses: actions/upload-artifact@v7
       with:
         name: claude-exec-log
@@ -581,3 +584,11 @@ runs:
         retention-days: 1
         overwrite: true
         if-no-files-found: ignore
+
+    - name: Clean up dsh diagnostics
+      # Runs after the upload: on a reused self-hosted runner the session
+      # transcript must not accumulate under /tmp between runs. Scoped to this
+      # action's own slug so a parallel matrix leg's directory is untouched.
+      if: always()
+      shell: bash
+      run: rm -rf /tmp/dsh-execution-output-review-${{ github.run_id }}-attempt*

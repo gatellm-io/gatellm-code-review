@@ -74,6 +74,9 @@ for tool in tr grep head sed dirname mktemp cp mv mkdir rm chmod cat ln env bash
 done
 ln -sf "$FIXTURES/fake-gh" "$tmpdir/bin/gh"
 ln -sf "$FIXTURES/fake-npm" "$tmpdir/bin/npm"
+# run.sh bounds both dsh invocations with `timeout` when it is on PATH; the
+# double records the invocations and runs the command unchanged.
+ln -sf "$FIXTURES/fake-timeout" "$tmpdir/bin/timeout"
 # run.sh shells out to node for patch.mjs; use the real interpreter.
 ln -sf "$(command -v node)" "$tmpdir/bin/node"
 
@@ -401,6 +404,28 @@ assert_contains "run: dsh runs from the workspace" "$(cat "$tmpdir/env")" "PWD=$
 status="$(run_case test-fail FAKE_DSH_EXIT=3)"
 assert_eq "run: a failed turn keeps dsh's exit code" 3 "$status"
 
+# A stalled turn must not pin a self-hosted runner: both invocations go through
+# `timeout` when the runner has it (the test double records each call).
+: > "$tmpdir/timeout.log"
+status="$(run_case test-timeout FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
+assert_eq "run: a timeout-wrapped run succeeds" 0 "$status"
+assert_eq "run: the probe and the turn both go through timeout" 2 \
+  "$(wc -l < "$tmpdir/timeout.log" | tr -d ' ')"
+assert_contains "run: the probe uses the short timeout" "$(sed -n '1p' "$tmpdir/timeout.log")" "timeout 120 fake-dsh"
+assert_contains "run: the turn uses the long timeout" "$(sed -n '2p' "$tmpdir/timeout.log")" "timeout 3600 fake-dsh"
+
+: > "$tmpdir/timeout.log"
+status="$(run_case test-timeout-custom DSH_TURN_TIMEOUT=42 FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
+assert_eq "run: a custom turn timeout still succeeds" 0 "$status"
+assert_contains "run: DSH_TURN_TIMEOUT overrides the turn timeout" \
+  "$(sed -n '2p' "$tmpdir/timeout.log")" "timeout 42 fake-dsh"
+
+: > "$tmpdir/timeout.log"
+status="$(run_case test-timeout-invalid DSH_TURN_TIMEOUT=abc FAKE_TIMEOUT_LOG="$tmpdir/timeout.log")"
+assert_eq "run: an invalid turn timeout still succeeds" 0 "$status"
+assert_contains "run: an invalid DSH_TURN_TIMEOUT falls back to the default" \
+  "$(sed -n '2p' "$tmpdir/timeout.log")" "timeout 3600 fake-dsh"
+
 # The --dump-config probe is diagnostic only: its body is collected, and a
 # failing probe must not change the turn's outcome.
 status="$(run_case test-dump-body FAKE_DSH_DUMP_CONFIG='apiKeyEnv: GATELLM_REVIEW_API_KEY')"
@@ -589,6 +614,7 @@ assert_contains "run: the oversized prompt explains the limit" "$(cat "$tmpdir/o
 # ==========================================================================
 echo "== GitHub wiring =="
 "$PY" - "$ROOT/action.yml" "$ROOT/.github/workflows/claude-auto-review.yml" <<'PY'
+import os
 import re
 import sys
 
@@ -814,6 +840,43 @@ elif "needs.setup.outputs.is_fork == 'true'" not in workflow_text:
     fail("workflow: the summarize job is not gated on the fork status")
 else:
     ok("workflow: summarize is skipped for a fork PR under dsh")
+
+# --- dsh diagnostics are cleaned up only after the upload ------------------
+# A reused self-hosted runner must not accumulate one session transcript per run.
+for path in (action, workflow):
+    job_re = r"^  [A-Za-z0-9_-]+:$" if path == workflow else None
+    entries = steps(path, job_re)
+    for i, (job, line, name, body) in enumerate(entries):
+        if not name.startswith("Upload execution log"):
+            continue
+        next_name = entries[i + 1][2] if i + 1 < len(entries) else ""
+        if not next_name.startswith("Clean up dsh diagnostics"):
+            fail(f"{path}:{line} [{job}] '{name}' is not followed by a dsh cleanup step")
+            continue
+        cleanup_body = entries[i + 1][3]
+        if "always()" not in cleanup_body:
+            fail(f"{path}:{line} [{job}] the cleanup step is not gated on always()")
+        elif "dsh-execution-output-" not in cleanup_body or "attempt*" not in cleanup_body:
+            fail(f"{path}:{line} [{job}] the cleanup step does not remove this run's dsh diagnostics")
+        else:
+            ok(f"{path}:{line} [{job}] dsh diagnostics are cleaned up after '{name}'")
+
+# The composite action must upload dsh diagnostics on success too, not only on
+# failure, or a review that completes but comes out wrong ships nothing.
+comp_upload = [b for _, _, n, b in steps(action) if n == "Upload execution log"]
+if not comp_upload or "steps.engine.outputs.engine == 'dsh'" not in comp_upload[0]:
+    fail("action.yml: 'Upload execution log' does not upload dsh diagnostics on success")
+else:
+    ok("action.yml: dsh diagnostics upload on success as well as failure")
+
+# The shipped issue_comment examples must carry the author_association guard.
+repo_root = os.path.dirname(action)
+for example in ("reusable-workflow-usage.yml", "composite-action-usage.yml"):
+    text = "\n".join(read(os.path.join(repo_root, "examples", example)))
+    if "author_association" not in text or "contains(fromJSON(" not in text:
+        fail(f"examples/{example}: the issue_comment trigger is not guarded by author_association")
+    else:
+        ok(f"examples/{example}: the issue_comment trigger is guarded by author_association")
 
 # --- engine normalization must not drift between the two copies -------------
 # action.yml resolves the engine in bash, the reusable workflow in JavaScript;

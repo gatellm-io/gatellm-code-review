@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Test double for GNU `timeout`: records the invocation, then runs the command.
+#
+# Environment:
+#   FAKE_TIMEOUT_LOG  one line per invocation: "timeout <seconds> <command name>"
+#                     (the full argv is not logged: a prompt argument can span
+#                     many lines, which would make call counting unreliable)
+set -u
+
+printf 'timeout %s %s\n' "${1:-}" "${2##*/}" >> "${FAKE_TIMEOUT_LOG:-/dev/null}"
+# Invocation shape: timeout <seconds> <command> [args...]
+shift
+exec "$@"
