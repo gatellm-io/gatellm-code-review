@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Test double for `npm install`.
+#
+# Understands the two invocations install.sh makes:
+#   npm install -g <spec>
+#   npm install --prefix <dir> <spec>
+# and writes a working fake `dsh` that reports the requested version.
+#
+# Environment:
+#   FAKE_NPM_LOG            argv log (default /dev/null)
+#   FAKE_NPM_GLOBAL_BIN     directory used as the global bin for `-g`
+#   FAKE_NPM_GLOBAL_EXIT    exit code for `-g` (default 0)
+#   FAKE_NPM_PREFIX_EXIT    exit code for `--prefix` (default 0)
+#   FAKE_NPM_SKIP_WRITE     when non-empty, succeed without creating a binary
+set -u
+
+printf 'npm %s\n' "$*" >> "${FAKE_NPM_LOG:-/dev/null}"
+
+PREFIX=""
+GLOBAL=0
+SPEC=""
+prev=""
+for arg in "$@"; do
+  case "$arg" in
+    -g) GLOBAL=1 ;;
+    --prefix) : ;;
+    *)
+      if [ "$prev" = "--prefix" ]; then
+        PREFIX="$arg"
+      else
+        SPEC="$arg"
+      fi
+      ;;
+  esac
+  prev="$arg"
+done
+
+VERSION="${SPEC##*@}"
+
+if [ "$GLOBAL" = "1" ]; then
+  EXIT="${FAKE_NPM_GLOBAL_EXIT:-0}"
+  BIN_DIR="${FAKE_NPM_GLOBAL_BIN:-}"
+else
+  EXIT="${FAKE_NPM_PREFIX_EXIT:-0}"
+  if [ -z "$PREFIX" ]; then
+    echo "fake-npm: --prefix is required for a non-global install" >&2
+    exit 2
+  fi
+  BIN_DIR="$PREFIX/node_modules/.bin"
+fi
+
+if [ "$EXIT" != "0" ]; then
+  echo "npm ERR! code EACCES" >&2
+  exit "$EXIT"
+fi
+
+[ -n "${FAKE_NPM_SKIP_WRITE:-}" ] && exit 0
+[ -n "$BIN_DIR" ] || exit 0
+
+mkdir -p "$BIN_DIR" || exit 1
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'if [ "${1:-}" = "--version" ]; then echo %s; exit 0; fi\n' "$VERSION"
+  printf 'echo "fake dsh installed by fake-npm"\n'
+} > "$BIN_DIR/dsh"
+chmod +x "$BIN_DIR/dsh"

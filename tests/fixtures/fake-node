@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Test double for node: `node --version` prints FAKE_NODE_VERSION.
+set -u
+echo "${FAKE_NODE_VERSION:-v24.9.0}"

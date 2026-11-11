@@ -4,8 +4,9 @@
 
 > The English version is the authoritative source. Other languages are community translations and may lag behind.
 
-A reusable GitHub Action that auto-generates code review for pull requests. Wraps `anthropics/claude-code-action@v1` and adds:
+A reusable GitHub Action that auto-generates code review for pull requests. Runs either `anthropics/claude-code-action@v1` or the **dsh** CLI (DeepSeek Harness) and adds:
 
+- **Two engines**: `claude-code` (default) or `dsh`, selected per run with the `engine` input. Both share the size gate, comment minimization, multi-model matrix, summarization and token settings.
 - **Multi-model parallel review + summary**: when ≥2 models are configured, each model reviews independently; the summarize job merges and deduplicates findings, annotates confidence (`[Consensus N/M]` / `[Single model]`), and renumbers the TODO list. Empty config falls back to single-model mode.
 - PR changed-lines threshold (default 10000); auto-skips when exceeded; supports manual re-run to force execution.
 - Minimizes historical Claude comments before each run to keep PR noise low.
@@ -90,6 +91,25 @@ jobs:
       # summary_model: "claude-sonnet-4"
 ```
 
+## Engines
+
+`engine` chooses which CLI performs the review. It applies to the whole run — the review jobs and, in multi-model mode, the summarize job.
+
+| Value | CLI | Notes |
+|---|---|---|
+| `claude-code` (default) | `anthropics/claude-code-action@v1` | Existing behavior; posts the comment itself, `track_progress`, inline-comment MCP tool |
+| `dsh` | `dsh --profile headless` | DeepSeek Harness; posts the comment itself, no progress comment, no inline comments |
+
+### dsh specifics
+
+- **Model selection.** `dsh` has no `--model` flag in headless mode. The action generates a patch layer and passes it with `dsh --patch`, pointing `agent-default-model` at the `model` input. The `[1m]` context-window suffix is stripped first: it is a Claude Code client-side convention that Claude Code interprets itself (it never sends the suffix as part of the model id), whereas dsh would forward it verbatim to the gateway. That strip is unconditional, so a gateway that requires a literal model id ending in `[1m]` works with neither engine — `claude-code` does not put the suffix on the wire either — and such a gateway must be configured to accept the plain model id (or mapped there) rather than in this action. (`$DSH_HOME/settings.yaml` is not used: dsh 0.2 only imports that legacy file after the first boot has already resolved its default model, so it would never apply to a fresh per-run `DSH_HOME`.)
+- **Gateway.** The provider is declared with `api: anthropic-messages`, `baseURL` from `anthropic_base_url` (default `https://api.anthropic.com`) and `apiKeyEnv: GATELLM_REVIEW_API_KEY`, which the runner environment supplies from `anthropic_api_key`. The generated patch contains only the variable *name*; the key is never written to disk. dsh requests `POST {baseURL}/v1/messages` with `x-api-key`, so one trailing `/v1` is stripped from the base URL: `anthropic_base_url` can stay exactly what the Claude Code engine expects.
+- **Tokens.** `max_context_tokens` and `max_output_tokens` map to the provider's `contextWindow` and `maxTokens`; the latter becomes the request's `max_tokens`, so both settings behave the same as under Claude Code.
+- **Permissions.** `dsh` presets that require approval (`read-only`, `workspace-write`) fail closed with no interactive answerer, so `run.sh` exports `DSH_PERMISSION_MODE=danger-full-access` (preset `danger-full-access`, sandbox `danger-full-access`, approval `never`): the agent gets an unrestricted shell plus the gateway key and GitHub token. See [Security](#security).
+- **Fork PRs are skipped.** `run.sh` refuses to run against a cross-repository PR (and only proceeds when `gh` reports `isCrossRepository: false` exactly), because anyone able to comment on a fork PR could otherwise reach the agent's environment through prompt injection. The skip is reported as a `::notice::` and a workflow step-summary line; the check fails closed if it cannot be evaluated. In multi-model mode the skipped leg also skips packaging and artifact upload, and the `summarize` job is skipped for a fork PR, so an intentional skip does not turn into an "absent model" summary or a failed run.
+- **Output.** In single-model mode dsh posts the PR comment itself. In multi-model mode it is told not to post and to write the review body to `./claude-review-output.md` itself, exactly like the Claude Code path; the existing packaging and summarization steps consume that file unchanged. If the model ignores that instruction, `run.sh` falls back to its stdout and emits a `::warning::` that the packaged body may include more than the review.
+- **Logs.** Execution logs, the composed prompt's stderr stream, the composed config dump, the generated patch layer and the dsh session logs are collected under `/tmp/dsh-execution-output-*-<run id>-attempt<attempt>`. The path is scoped to the run, so a shared self-hosted runner cannot pick up another in-flight run's files. Files are staged outside that directory and published into it only after the gateway key / GitHub token have been redacted, so a file that cannot be scrubbed is excluded from the upload (if it cannot be removed either, no diagnostics are uploaded at all). Redaction matches each secret's literal value and its base64 forms (standard and URL-safe, padded and unpadded, including the 76-column wrapping GNU `base64` produces); arbitrary transformations — compression, reversal, a custom wrap width — are not detectable, so treat the scrubber as defence-in-depth hygiene rather than a guarantee. The upload is readable by anyone with repository read access and is kept for the artifact retention period, which is why the fork guard, not the scrubber, is the security boundary. They are uploaded with the same artifact as the Claude execution log (the composite action uploads them whenever the engine is `dsh`, including on success; the reusable workflow uses `if: always()`), and an `if: always()` step placed after the upload then deletes that leg's directory, so a reused self-hosted runner does not accumulate one session transcript per run. Both dsh invocations are bounded by `timeout` when the runner provides it (`gtimeout` from Homebrew also works): the turn uses `DSH_TURN_TIMEOUT` (default 3600 seconds) and the config probe `DSH_PROBE_TIMEOUT` (default 120). Where supported, `timeout` is also given `-k` so the process is SIGKILLed after a grace period (`DSH_KILL_AFTER`, default 30 seconds) if it ignores SIGTERM. On a runner with neither command they run unbounded; GitHub's default job timeout of 360 minutes then applies, and a self-hosted runner's configured timeout may be longer, so install coreutils where a hard bound matters.
+
 ## Inputs
 
 ### Composite Action inputs (`action.yml`)
@@ -99,7 +119,9 @@ jobs:
 | `anthropic_api_key` | string | `""` | Anthropic API key (caller must pass explicitly, e.g. `${{ secrets.CODE_REVIEW_API_KEY }}`) |
 | `anthropic_base_url` | string | `""` | Anthropic API base URL (caller must pass explicitly, e.g. `${{ vars.CODE_REVIEW_BASE_URL }}`; used when proxying through a gateway) |
 | `github_token` | string | `${{ github.token }}` | GitHub token; needs `pull-requests: write`, `issues: write`, `actions: read` |
-| `model` | string | `""` | Single model name (REQUIRED in practice: pass `${{ vars.CODE_REVIEW_MODEL }}` or a literal; empty fails the run — no silent fallback to the CLI default model). The `[1m]` suffix denotes the 1M-token context-window variant, recommended for large PRs |
+| `model` | string | `""` | Single model name (REQUIRED in practice: pass `${{ vars.CODE_REVIEW_MODEL }}` or a literal; empty fails the run — no silent fallback to the CLI default model). The `[1m]` suffix denotes the 1M-token context-window variant, recommended for large PRs; it is stripped before the name reaches the dsh engine |
+| `engine` | string | `"claude-code"` | Review engine: `claude-code` or `dsh` (DeepSeek Harness). Whitespace and case are normalized; any other value fails the job |
+| `dsh_version` | string | `""` | Exact dsh CLI version. Empty reuses any preinstalled dsh and installs the pinned default (`0.2.2-rc.1`) when none is found; an explicit version must match exactly, otherwise the preinstalled copy is ignored and that version is installed |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
 | `max_context_tokens` | string | `""` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit value other than the literal `0` overrides everything, but a non-zero value that is not a positive integer fails the job; omitting it (the default), passing the literal `0`, or passing whitespace-only is treated as unset and falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` (this input is forwarded as a string by the composite action; other zero spellings such as `00`, `0.0` or `+0` are **not** treated as unset and fail the job as non-positive-integer input) |
 | `max_output_tokens` | string | `""` | Max output tokens for Claude Code, exported as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Same resolution and validation rules as `max_context_tokens`: an explicit non-zero value wins, otherwise a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS` env var applies, otherwise `64000` |
@@ -115,6 +137,8 @@ jobs:
 | `model` | string | `${{ vars.CODE_REVIEW_MODEL }}` | Single model name (used when `models` is empty) |
 | `models` | string | `${{ vars.CODE_REVIEW_MODELS }}` | Comma-separated model list (≥2 enables multi-model parallel mode; max 3, extras truncated) |
 | `summary_model` | string | `${{ vars.CODE_REVIEW_SUMMARY_MODEL }}` | Summary model name (used in multi-model mode; empty takes the first of `models`) |
+| `engine` | string | `${{ vars.CODE_REVIEW_ENGINE }}` | Review engine: `claude-code` (empty default) or `dsh`. Applied to the review and summarize jobs; any other value fails the setup job |
+| `dsh_version` | string | `""` | Exact dsh CLI version; same rules as the composite action input |
 | `max_lines` | number | `10000` | Max PR changed lines; skip review if exceeded; `-1` means unlimited |
 | `max_context_tokens` | number | `0` | Max context tokens for Claude Code, exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. An explicit non-zero value overrides everything, but a non-integer value fails the job; `0` (the default) falls back to a runner-provided `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env var, then to `1000000` |
 | `max_output_tokens` | number | `0` | Max output tokens for Claude Code, exported as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Same rules as `max_context_tokens`: an explicit non-zero value wins, otherwise a runner-provided `CLAUDE_CODE_MAX_OUTPUT_TOKENS` env var applies, otherwise `64000` |
@@ -133,12 +157,21 @@ The caller repo needs the following in Settings → Secrets and variables → Ac
 | Variable | `CODE_REVIEW_MODEL` | No | Default model name in single-model mode |
 | Variable | `CODE_REVIEW_MODELS` | No | Comma-separated list in multi-model mode |
 | Variable | `CODE_REVIEW_SUMMARY_MODEL` | No | Summary model name in multi-model mode |
+| Variable | `CODE_REVIEW_ENGINE` | No | Default engine for the reusable workflow (`claude-code` or `dsh`) |
 
 > To share the same credentials across all repos in an org, consider [Organization-level secrets and variables](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-organization).
 
 ## Runner requirements
 
-**Self-hosted runners must run Actions Runner >= 2.327.1 with `node24` support.** The steps in this action use `actions/checkout@v7`, `actions/github-script@v9`, `actions/upload-artifact@v7` and `actions/download-artifact@v8`; all four run on Node.js 24, and the artifact actions state a minimum Actions Runner version of 2.327.1 (`checkout`/`github-script` carry the same floor). An older runner fails those steps: `Upload execution log` fails, and in multi-model mode `Upload review artifact` fails too, so the `summarize` job then fails at `Download all review artifacts` with `Artifact not found for pattern claude-review-*` and no summary comment is posted. GitHub-hosted runners are always current; this only affects self-hosted fleets, including the `[self-hosted, Linux, fargate-runner]` example in Mode 2 — upgrade them before moving the rolling `v1` tag to a release containing this change.
+**Self-hosted runners must run Actions Runner >= 2.327.1 with `node24` support.** The steps in this action use `actions/checkout@v7`, `actions/github-script@v9`, `actions/setup-node@v7`, `actions/upload-artifact@v7` and `actions/download-artifact@v8`; all five run on Node.js 24, and the artifact actions state a minimum Actions Runner version of 2.327.1 (`checkout`/`github-script`/`setup-node` carry the same floor). An older runner fails those steps: `Upload execution log` fails, and in multi-model mode `Upload review artifact` fails too, so the `summarize` job then fails at `Download all review artifacts` with `Artifact not found for pattern claude-review-*` and no summary comment is posted. GitHub-hosted runners are always current; this only affects self-hosted fleets, including the `[self-hosted, Linux, fargate-runner]` example in Mode 2 — upgrade them before moving the rolling `v1` tag to a release containing this change.
+
+**The `dsh` engine adds three runner requirements** (the `claude-code` path is unaffected):
+
+- **Node.js >= 24.9.0**, the floor declared by `@deepseek-ai/dsh`. The action detects an acceptable Node first and only runs `actions/setup-node` when none is found.
+- **The GitHub CLI (`gh`) on `PATH`.** `run.sh` uses `gh pr view` for the fork-PR guard. A runner without it fails closed with an explicit `::error::` before any review runs.
+- **Network access to the npm registry**, if dsh is not already installed on the runner. A fully offline runner must preinstall dsh (see [dsh CLI install](#dsh-cli-install)).
+
+The reusable workflow also uses the `job.workflow_repository` / `job.workflow_sha` context to check out this repository's `scripts/` directory when the `dsh` engine is selected. Those properties are documented `job`-context members since the September 2026 update (checked against the GitHub Actions contexts reference on 2026-11-11; `job.workflow_ref` and `job.workflow_file_path` are the other two). They are unavailable on GitHub Enterprise Server, where the `dsh` engine therefore cannot run; `claude-code` is unaffected there. The checkout uses the workflow's default `github.token`, whose scope is the caller's repository: GitHub does not let that token be granted read access to a *different* repository, and the checkout passes no `token:` input. This repository is public, so the read works for the normal case; a private copy cannot be fetched by the `dsh` engine — use the default `claude-code` engine if `scripts/` must come from a private copy. If the checkout fails, that step fails and the dsh job fails with it; there is no silent fallback. The checkout itself still has to be exercised on a live runner (see the first-run note above).
 
 ## Permission requirements
 
@@ -154,11 +187,25 @@ permissions:
 
 The composite action itself does not set `permissions`; the caller job controls them. The reusable workflow sets `permissions` on each of its three jobs (`setup` only needs `contents: read` + `pull-requests: read`; `review`/`summarize` need the full set above).
 
+## Security
+
+The `claude-code` path runs the CLI through `anthropics/claude-code-action`, which restricts it to the tools listed in `claude_args`. **The `dsh` engine has no equivalent allowlist**: its sandbox limits file writes only (not network or commands), and unattended runs require the `danger-full-access` preset. Concretely, a dsh review can execute arbitrary shell commands, reach the network, and read the gateway API key and the GitHub token from its environment.
+
+Practical consequences and the built-in mitigation:
+
+- **PR content is untrusted input.** A malicious diff, commit message or PR title could ask the agent to exfiltrate secrets. `run.sh` therefore refuses to run on cross-repository (fork) PRs, emitting a `::notice::` and a step-summary line instead of a review. The check is fail-closed: the engine runs only when `gh` reports `isCrossRepository: false` exactly, and stops with an `::error::` if `gh` is missing, errors, or returns anything else.
+- **Trigger surface.** For `issue_comment` triggers, anyone who can comment can start a run. Add an `author_association` guard to the caller's `if:` condition when using the dsh engine on a public repository, e.g. `contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)`.
+- **Default stays `claude-code`.** Switching to dsh is an explicit, per-workflow decision.
+
+**Decision recorded for this action (2026-11-11, PR #8).** The `dsh` engine stays opt-in and the default engine is unchanged. The residual exposure described above — an unrestricted shell running in the same process as the gateway key and the GitHub token — is accepted for callers that explicitly select `dsh`, on the strength of the controls in this section: the fail-closed fork guard, fail-closed staging and redaction of uploaded diagnostics, run-scoped uploads with post-upload cleanup, and an isolated `$DSH_HOME`. Callers that expose an `issue_comment` trigger must apply the `author_association` guard (both shipped examples do). Repositories that do not accept the trade-off keep `claude-code`, where none of this applies. This paragraph is the repository's record of the decision — the `setup` job repeats the disclosure as a `::warning::` on every dsh run — so changing the posture means changing this paragraph, not silently re-tuning `run.sh`.
+
 ## Versioning
 
 - `v1`: rolling tag, points to the latest 1.x release
 - `v1.0.0` etc.: semantic tags that pin an exact version
 - `main`: development branch, not recommended for production use
+
+**Pre-release check for the `dsh` engine.** Before a release containing the `dsh` engine moves the rolling `v1` tag, run it once on the target self-hosted runner and record the outcome (date, runner, model, result) in the release notes: a complete dsh turn, the review comment posted via `gh pr comment` (single-model) or the merged summary (multi-model), and the cross-repository `scripts/` sparse checkout resolving. None of those can be verified from the diff, and the unit tests run offline against test doubles.
 
 Release flow:
 
@@ -195,6 +242,24 @@ Before each review, calls GraphQL `minimizeComment` to fold historical Claude co
 
 - Runner has Claude CLI preinstalled (typical self-hosted case): reused directly.
 - Runner doesn't (typical `ubuntu-latest` case): both the composite action and the reusable workflow (review and summarize jobs) first try `npm install -g @anthropic-ai/claude-code`, then fall back to `curl -fsSL https://claude.ai/install.sh | bash` (npm isn't affected by Claude.ai geo-block, recommended).
+
+### dsh CLI install
+
+The `dsh` engine reuses the same detect-then-install pattern as Claude CLI:
+
+- **Runner has dsh preinstalled** (the usual case for self-hosted runners): reused directly. The search covers `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.nvm/versions/node/*/bin` and the action's own tool cache. Each candidate must run and report a version; broken binaries are skipped with a warning.
+- **Runner has no dsh**: try `npm install -g @deepseek-ai/dsh@<version>`, then fall back to installing into `$RUNNER_TOOL_CACHE/gatellm-code-review/dsh/<version>` when the global prefix is not writable. The fallback location is one of the detection paths, so the next run on that runner reuses it.
+
+`dsh_version` controls which version is accepted:
+
+| `dsh_version` | Preinstalled dsh | Nothing installed |
+|---|---|---|
+| empty (default) | any version is accepted | pinned default `0.2.2-rc.1` is installed |
+| `0.2.2-rc.1` | must match exactly; a different version is ignored with a `::notice::` | that version is installed |
+
+Build metadata (`1.2.3+build`) is accepted in `dsh_version` but ignored when comparing, as semver specifies: `1.2.3+build` and `1.2.3` are the same version. Detection and installation use the same normalized form, so `1.2.3+build` matches a preinstalled `1.2.3` and, when nothing is installed, npm is asked for `@deepseek-ai/dsh@1.2.3`.
+
+Because the default accepts any preinstalled version, a self-hosted runner whose dsh drifts from the tested version can behave differently between runs. Set `dsh_version` explicitly when reproducibility matters; the resolved version is printed in the log. The `--patch` overlay's provider/model schema and its "replace, not deep-merge" semantics were verified against `0.2.2-rc.1` only; `tests/dsh-engine.sh` pins that version and the emitted patch shape, so a version bump is caught and must be re-validated rather than drifting silently.
 
 ### Max context tokens
 
@@ -244,7 +309,7 @@ See the `prompt` defaults in `action.yml` / the workflow file for full details.
 
 Each run uploads artifacts for debugging (download from the workflow run's summary page):
 
-- `claude-exec-log*` (composite action and reusable workflow): Claude execution logs, retained 1 day by the composite action and 3 days by the reusable workflow.
+- `claude-exec-log*` (composite action and reusable workflow): engine execution logs — the Claude execution JSON, or the dsh `final.md`, `stderr.log`, `dump-config.txt`, generated `patch.yml` and session logs — retained 1 day by the composite action and 3 days by the reusable workflow. The artifact name is unchanged so existing download scripts keep working.
 - `claude-review-*` (multi-model only): each model's raw review markdown, retained 7 days; the summarize job consumes them to build the merged comment.
 
 ## Local validation
@@ -258,9 +323,15 @@ ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f, aliases: true) }' \
 # also runs in the Tests workflow)
 bash tests/resolve-token-limits.sh
 
+# dsh engine tests: CLI detection/install, patch generation, prompt
+# composition, run.sh, and the GitHub wiring (also runs in the Tests workflow)
+bash tests/dsh-engine.sh
+
 # actionlint (if installed)
 actionlint
 ```
+
+> `actionlint` releases before the September 2026 `job` context update report `job.workflow_repository` / `job.workflow_sha` as undefined. Those four warnings in `.github/workflows/claude-auto-review.yml` are a schema lag, not a workflow error; the properties are documented in the [GitHub Actions changelog](https://github.blog/changelog/2026-09-03-github-actions-early-september-2026-updates/). Everything else `actionlint` reports in this repository predates the dsh engine.
 
 ## License
 

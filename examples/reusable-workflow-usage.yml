@@ -11,11 +11,16 @@ on:
 
 jobs:
   claude-review:
+    # The `author_association` check on issue_comment is required when the dsh
+    # engine can be selected: the comment text becomes part of the agent's
+    # prompt, and a non-collaborator can comment on a same-repository PR, which
+    # the fork guard does not cover. See the Security section of the README.
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request != null &&
        github.event.comment.user.type != 'Bot' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
        contains(github.event.comment.body, '@claude'))
     uses: gatellm-io/gatellm-code-review/.github/workflows/claude-auto-review.yml@v1
     # NOTE: `secrets: inherit` only passes secrets within the SAME org/enterprise.
@@ -25,6 +30,10 @@ jobs:
       CODE_REVIEW_API_KEY: ${{ secrets.CODE_REVIEW_API_KEY }}
     with:
       runs_on: "self-hosted, Linux, fargate-runner"
+
+      # — Engine (applies to review and summarize) —
+      # engine: claude-code    # default; the other option is dsh (DeepSeek Harness)
+      # dsh_version: ""        # Empty reuses any preinstalled dsh, else installs the pinned default
 
       # — Single-model mode (default) —
       # Leave `models` empty; uses `model` for single-model review, output is posted directly as a PR comment

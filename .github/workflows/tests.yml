@@ -43,3 +43,26 @@ jobs:
             export BASH_BIN=bash
           fi
           "$BASH_BIN" tests/resolve-token-limits.sh
+
+  dsh-engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run dsh engine tests
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          if [ "$OS" = "macos-latest" ]; then
+            export BASH_BIN=/bin/bash
+          else
+            export BASH_BIN=bash
+          fi
+          "$BASH_BIN" tests/dsh-engine.sh

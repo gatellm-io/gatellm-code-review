@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Test double for the dsh CLI.
+#
+# Environment:
+#   FAKE_DSH_VERSION        reported by --version
+#   FAKE_DSH_STDOUT         printed on stdout on a real run (default: empty)
+#   FAKE_DSH_STDERR         printed on stderr on a real run (default: empty)
+#   FAKE_DSH_EXIT           exit code of a real run (default: 0)
+#   FAKE_DSH_ARGV_FILE      one argument per line, for the last run
+#   FAKE_DSH_ENV_FILE       selected environment variables, for the last run
+#   FAKE_DSH_WRITE_FILE     when set, write FAKE_DSH_WRITE_CONTENT to this path
+#   FAKE_DSH_WRITE_CONTENT  content for FAKE_DSH_WRITE_FILE
+#   FAKE_DSH_DUMP_CONFIG    stdout body of --dump-config (default: dump-config)
+#   FAKE_DSH_DUMP_CONFIG_EXIT exit code of --dump-config (default: 0)
+set -u
+
+if [ "${1:-}" = "--version" ]; then
+  echo "${FAKE_DSH_VERSION:-0.2.2-rc.1}"
+  exit 0
+fi
+
+# `--dump-config` is the diagnostic probe run.sh makes before the real turn.
+# Real dsh only prints its resolved config there, so this double must perform
+# none of a run's side effects (stdout body, files, exit code): otherwise a test
+# could pass because of the probe even when the real invocation does nothing.
+for arg in "$@"; do
+  if [ "$arg" = "--dump-config" ]; then
+    printf '%s\n' "${FAKE_DSH_DUMP_CONFIG:-dump-config}"
+    exit "${FAKE_DSH_DUMP_CONFIG_EXIT:-0}"
+  fi
+done
+
+if [ -n "${FAKE_DSH_ARGV_FILE:-}" ]; then
+  : > "$FAKE_DSH_ARGV_FILE"
+  # The argument count comes first so a multi-line prompt stays countable.
+  printf '#argc=%s\n' "$#" >> "$FAKE_DSH_ARGV_FILE"
+  for arg in "$@"; do
+    printf '%s\n' "$arg" >> "$FAKE_DSH_ARGV_FILE"
+  done
+fi
+
+if [ -n "${FAKE_DSH_ENV_FILE:-}" ]; then
+  {
+    printf 'DSH_HOME=%s\n' "${DSH_HOME:-}"
+    printf 'DSH_PERMISSION_MODE=%s\n' "${DSH_PERMISSION_MODE:-}"
+    printf 'DSH_TELEMETRY_DISABLED=%s\n' "${DSH_TELEMETRY_DISABLED:-}"
+    printf 'GATELLM_REVIEW_API_KEY=%s\n' "${GATELLM_REVIEW_API_KEY:-}"
+    printf 'PWD=%s\n' "$PWD"
+  } > "$FAKE_DSH_ENV_FILE"
+fi
+
+if [ -n "${FAKE_DSH_WRITE_FILE:-}" ]; then
+  mkdir -p "$(dirname "$FAKE_DSH_WRITE_FILE")" 2>/dev/null || true
+  printf '%s\n' "${FAKE_DSH_WRITE_CONTENT:-}" > "$FAKE_DSH_WRITE_FILE"
+fi
+
+[ -n "${FAKE_DSH_STDOUT:-}" ] && printf '%s\n' "$FAKE_DSH_STDOUT"
+[ -n "${FAKE_DSH_STDERR:-}" ] && printf '%s\n' "$FAKE_DSH_STDERR" >&2
+exit "${FAKE_DSH_EXIT:-0}"

@@ -14,11 +14,16 @@ on:
 
 jobs:
   claude-review:
+    # The `author_association` check on issue_comment is required when the dsh
+    # engine can be selected: the comment text becomes part of the agent's
+    # prompt, and a non-collaborator can comment on a same-repository PR, which
+    # the fork guard does not cover. See the Security section of the README.
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request != null &&
        github.event.comment.user.type != 'Bot' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
        contains(github.event.comment.body, '@claude'))
     # Runner is chosen by the caller; self-hosted reuses the preinstalled Claude CLI, ubuntu-latest auto-installs as fallback
     runs-on: [self-hosted, Linux, fargate-runner]
@@ -48,6 +53,11 @@ jobs:
           # Model is required in practice: the action fails fast when it is empty.
           # Pass vars.CODE_REVIEW_MODEL or a literal model name.
           model: ${{ vars.CODE_REVIEW_MODEL }}
+
+          # Engine: claude-code (default) or dsh (DeepSeek Harness).
+          # dsh runs with an unrestricted shell and is skipped for fork PRs.
+          # engine: dsh
+          # dsh_version: ""   # Empty reuses any preinstalled dsh, else installs the pinned default
 
           # Business params (all have defaults; override as needed)
           # max_lines: 10000
